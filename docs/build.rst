@@ -1,9 +1,9 @@
 Building kitty from source
 ==============================
 
-.. image:: https://travis-ci.org/kovidgoyal/kitty.svg?branch=master
+.. image:: https://github.com/kovidgoyal/kitty/workflows/CI/badge.svg
   :alt: Build status
-  :target: https://travis-ci.org/kovidgoyal/kitty
+  :target: https://github.com/kovidgoyal/kitty/actions?query=workflow%3ACI
 
 
 |kitty| is designed to run from source, for easy hackability. Make sure
@@ -14,13 +14,15 @@ Dependencies
 
 Run-time dependencies:
 
-    * python >= 3.5
-    * harfbuzz >= 1.5.0
+    * python >= 3.6
+    * harfbuzz >= 2.2.0
     * zlib
     * libpng
+    * liblcms2
     * freetype (not needed on macOS)
     * fontconfig (not needed on macOS)
-    * ImageMagick (optional, needed to use the ``kitty icat`` tool to display images in the terminal)
+    * libcanberra (not needed on macOS)
+    * ImageMagick (optional, needed to use the ``kitty +kitten icat`` tool to display images in the terminal)
     * pygments (optional, need for syntax highlighting in ``kitty +kitten diff``)
 
 Build-time dependencies:
@@ -28,7 +30,7 @@ Build-time dependencies:
     * gcc or clang
     * pkg-config
     * For building on Linux in addition to the above dependencies you might also need to install the ``-dev`` packages for:
-      ``libdbus-1-dev``, ``libxcursor-dev``, ``libxrandr-dev``, ``libxi-dev``, ``libxinerama-dev``, ``libgl1-mesa-dev``, ``libxkbcommon-x11-dev``, ``libfontconfig-dev`` and ``libpython-dev``.
+      ``libdbus-1-dev``, ``libxcursor-dev``, ``libxrandr-dev``, ``libxi-dev``, ``libxinerama-dev``, ``libgl1-mesa-dev``, ``libxkbcommon-x11-dev``, ``libfontconfig-dev``, ``libx11-xcb-dev``, ``liblcms2-dev``, and ``libpython3-dev``,
       if they are not already installed by your distro.
 
 Install and run from source
@@ -44,25 +46,17 @@ Now build the native code parts of |kitty| with the following command::
 
 You can run |kitty|, as::
 
-    python3 .
+    ./kitty/launcher/kitty
 
-If that works, you can create a script to launch |kitty|:
-
-.. code-block:: sh
-
-    #!/usr/bin/env python3
-    import runpy
-    runpy.run_path('/path/to/kitty/dir', run_name='__main__')
-
-And place it in :file:`~/bin` or :file:`/usr/bin` so that you can run |kitty| using
+If that works, you can create a symlink to the launcher in :file:`~/bin` or
+some other directory on your PATH so that you can run |kitty| using
 just ``kitty``.
 
 
 Building kitty.app on macOS from source
 -------------------------------------------
 
-Install `imagemagick`, `optipng` and `librsvg` using `brew` or similar (needed
-for the logo generation step). And run::
+Run::
 
     make app
 
@@ -70,10 +64,31 @@ This :file:`kitty.app` unlike the released one does not include its own copy of
 python and the other dependencies. So if you ever un-install/upgrade those dependencies
 you might have to rebuild the app.
 
-Note that the released :file:`kitty.dmg` includes all dependencies, unlike the
-:file:`kitty.app` built above and is built automatically by using the :file:`kitty` branch of
-`build-calibre <https://github.com/kovidgoyal/build-calibre>`_ however, that
-is designed to run on Linux and is not for the faint of heart.
+.. note::
+   The released :file:`kitty.dmg` includes all dependencies, unlike the
+   :file:`kitty.app` built above and is built automatically by using the
+   <https://github.com/kovidgoyal/bypy>`_ however, that is designed to
+   run on Linux and is not for the faint of heart.
+
+
+.. note::
+   Apple disallows certain functionality, such as notifications for unsigned applications.
+   If you need this functionality, you can try signing the built kitty.app with
+   a self signed certificate, see for example, `here
+   <https://stackoverflow.com/questions/27474751/how-can-i-codesign-an-app-without-being-in-the-mac-developer-program/27474942>`_.
+
+Build and run from source with Nix
+-------------------------------------------
+
+On NixOS or any other Linux or macOS system with the Nix package manager
+installed, execute `nix-shell
+<https://nixos.org/guides/nix-pills/developing-with-nix-shell.html>`_ to create
+the correct environment to build kitty or use ``nix-shell --pure`` instead to
+eliminate most of the influence of the outside system, e.g. globally installed
+packages. ``nix-shell`` will automatically fetch all required dependencies and
+make them available in the newly spawned shell.
+
+Then proceed with ``make`` or ``make app`` according to the platform specific instructions above.
 
 
 Note for Linux/macOS packagers
@@ -107,7 +122,13 @@ without needing to install all of |kitty|.
         development package of :file:`ncurses`. Also, if you are building from
         a git checkout instead of the released source code tarball, you will
         need :file:`sphinx-build` from the `Sphinx documentation generator
-        <http://www.sphinx-doc.org/>`_.
+        <https://www.sphinx-doc.org/>`_.
 
 This applies to creating packages for |kitty| for macOS package managers such as
 brew or MacPorts as well.
+
+
+.. note::
+        |kitty| has its own update check mechanism, if you would like to turn
+        it off for your package, use
+        ``python3 setup.py linux-package --update-check-interval=0``

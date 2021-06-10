@@ -13,7 +13,6 @@
       "cocoa_joystick.m",
       "cocoa_monitor.m",
       "cocoa_window.m",
-      "cocoa_time.c",
       "posix_thread.c",
       "nsgl_context.m",
       "egl_context.c",
@@ -31,6 +30,7 @@
       "input.c",
       "monitor.c",
       "vulkan.c",
+      "monotonic.c",
       "window.c"
     ]
   },
@@ -38,7 +38,6 @@
     "headers": [
       "null_platform.h",
       "null_joystick.h",
-      "posix_time.h",
       "posix_thread.h",
       "osmesa_context.h"
     ],
@@ -47,7 +46,6 @@
       "null_monitor.c",
       "null_window.c",
       "null_joystick.c",
-      "posix_time.c",
       "posix_thread.c",
       "osmesa_context.c"
     ]
@@ -55,8 +53,9 @@
   "wayland": {
     "headers": [
       "wl_platform.h",
-      "posix_time.h",
       "posix_thread.h",
+      "wl_cursors.h",
+      "wl_text_input.h",
       "xkb_glfw.h",
       "dbus_glfw.h",
       "ibus_glfw.h",
@@ -64,7 +63,11 @@
       "egl_context.h",
       "osmesa_context.h",
       "linux_joystick.h",
-      "null_joystick.h"
+      "null_joystick.h",
+      "linux_notify.h",
+      "linux_desktop_settings.h",
+      "wl_client_side_decorations.h",
+      "main_loop.h"
     ],
     "protocols": [
       "stable/xdg-shell/xdg-shell.xml",
@@ -73,13 +76,16 @@
       "unstable/pointer-constraints/pointer-constraints-unstable-v1.xml",
       "unstable/idle-inhibit/idle-inhibit-unstable-v1.xml",
       "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
-      "unstable/primary-selection/primary-selection-unstable-v1.xml"
+      "unstable/primary-selection/primary-selection-unstable-v1.xml",
+      "unstable/text-input/text-input-unstable-v3.xml"
     ],
     "sources": [
       "wl_init.c",
       "wl_monitor.c",
       "wl_window.c",
-      "posix_time.c",
+      "wl_cursors.c",
+      "wl_text_input.c",
+      "wl_client_side_decorations.c",
       "posix_thread.c",
       "xkb_glfw.c",
       "dbus_glfw.c",
@@ -88,7 +94,9 @@
       "osmesa_context.c",
       "backend_utils.c",
       "linux_joystick.c",
-      "null_joystick.c"
+      "linux_desktop_settings.c",
+      "null_joystick.c",
+      "linux_notify.c"
     ]
   },
   "wayland_protocols": [
@@ -122,13 +130,14 @@
       "dbus_glfw.h",
       "ibus_glfw.h",
       "backend_utils.h",
-      "posix_time.h",
       "posix_thread.h",
       "glx_context.h",
       "egl_context.h",
       "osmesa_context.h",
       "linux_joystick.h",
-      "null_joystick.h"
+      "null_joystick.h",
+      "linux_notify.h",
+      "main_loop.h"
     ],
     "sources": [
       "x11_init.c",
@@ -137,14 +146,14 @@
       "xkb_glfw.c",
       "dbus_glfw.c",
       "ibus_glfw.c",
-      "posix_time.c",
       "posix_thread.c",
       "glx_context.c",
       "egl_context.c",
       "osmesa_context.c",
       "backend_utils.c",
       "linux_joystick.c",
-      "null_joystick.c"
+      "null_joystick.c",
+      "linux_notify.c"
     ]
   }
 }

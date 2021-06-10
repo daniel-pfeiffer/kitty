@@ -5,8 +5,10 @@
  * Distributed under terms of the GPL3 license.
  */
 
-#include "data-types.h"
 // Taken from consolemap.c in the linux vt driver sourcecode
+
+#include "data-types.h"
+
 
 static uint32_t charset_translations[5][256] = {
   /* 8-bit Latin-1 mapped to Unicode -- trivial mapping */
@@ -207,7 +209,7 @@ translation_table(uint32_t which) {
 
 uint32_t *latin1_charset = charset_translations[0];
 
-// UTF-8 decode taken from: http://bjoern.hoehrmann.de/utf-8/decoder/dfa/
+// UTF-8 decode taken from: https://bjoern.hoehrmann.de/utf-8/decoder/dfa/
 
 static const uint8_t utf8_data[] = {
   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // 00..1f
@@ -227,7 +229,7 @@ static const uint8_t utf8_data[] = {
 };
 
 uint32_t
-decode_utf8(uint32_t* state, uint32_t* codep, uint8_t byte) {
+decode_utf8(UTF8State* state, uint32_t* codep, uint8_t byte) {
   uint32_t type = utf8_data[byte];
 
   *codep = (*state != UTF8_ACCEPT) ?
@@ -236,6 +238,27 @@ decode_utf8(uint32_t* state, uint32_t* codep, uint8_t byte) {
 
   *state = utf8_data[256 + *state*16 + type];
   return *state;
+}
+
+size_t
+decode_utf8_string(const char *src, size_t sz, uint32_t *dest) {
+    // dest must be a zeroed array of size at least sz
+    uint32_t codep = 0;
+    UTF8State state = 0, prev = UTF8_ACCEPT;
+    size_t i, d;
+    for (i = 0, d = 0; i < sz; i++) {
+        switch(decode_utf8(&state, &codep, src[i])) {
+            case UTF8_ACCEPT:
+                dest[d++] = codep;
+                break;
+            case UTF8_REJECT:
+                state = UTF8_ACCEPT;
+                if (prev != UTF8_ACCEPT && i > 0) i--;
+                break;
+        }
+        prev = state;
+    }
+    return d;
 }
 
 unsigned int

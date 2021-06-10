@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -7,21 +7,33 @@ import importlib
 import os
 import sys
 from functools import partial
+from typing import Any, Dict, FrozenSet, List, TYPE_CHECKING, cast
+
+from kitty.types import run_once
 
 aliases = {'url_hints': 'hints'}
+if TYPE_CHECKING:
+    from kitty.conf.types import Definition
+else:
+    Definition = object
 
 
-def resolved_kitten(k):
+def resolved_kitten(k: str) -> str:
     return aliases.get(k, k).replace('-', '_')
 
 
-def import_kitten_main_module(config_dir, kitten):
+def path_to_custom_kitten(config_dir: str, kitten: str) -> str:
+    path = os.path.expanduser(kitten)
+    if not os.path.isabs(path):
+        path = os.path.join(config_dir, path)
+    path = os.path.abspath(path)
+    return path
+
+
+def import_kitten_main_module(config_dir: str, kitten: str) -> Dict[str, Any]:
     if kitten.endswith('.py'):
         path_modified = False
-        path = os.path.expanduser(kitten)
-        if not os.path.isabs(path):
-            path = os.path.join(config_dir, path)
-        path = os.path.abspath(path)
+        path = path_to_custom_kitten(config_dir, kitten)
         if os.path.dirname(path):
             sys.path.insert(0, os.path.dirname(path))
             path_modified = True
@@ -37,26 +49,27 @@ def import_kitten_main_module(config_dir, kitten):
 
     kitten = resolved_kitten(kitten)
     m = importlib.import_module('kittens.{}.main'.format(kitten))
-    return {'start': m.main, 'end': getattr(m, 'handle_result', lambda *a, **k: None)}
+    return {'start': getattr(m, 'main'), 'end': getattr(m, 'handle_result', lambda *a, **k: None)}
 
 
-def create_kitten_handler(kitten, orig_args):
+def create_kitten_handler(kitten: str, orig_args: List[str]) -> Any:
     from kitty.constants import config_dir
     kitten = resolved_kitten(kitten)
     m = import_kitten_main_module(config_dir, kitten)
     ans = partial(m['end'], [kitten] + orig_args)
-    ans.type_of_input = getattr(m['end'], 'type_of_input', None)
-    ans.no_ui = getattr(m['end'], 'no_ui', False)
+    setattr(ans, 'type_of_input', getattr(m['end'], 'type_of_input', None))
+    setattr(ans, 'no_ui', getattr(m['end'], 'no_ui', False))
     return ans
 
 
-def set_debug(kitten):
-    from kittens.tui.loop import debug
+def set_debug(kitten: str) -> None:
     import builtins
-    builtins.debug = debug
+
+    from kittens.tui.loop import debug
+    setattr(builtins, 'debug', debug)
 
 
-def launch(args):
+def launch(args: List[str]) -> None:
     config_dir, kitten = args[:2]
     kitten = resolved_kitten(kitten)
     del args[:2]
@@ -78,7 +91,7 @@ def launch(args):
     sys.stdout.flush()
 
 
-def deserialize(output):
+def deserialize(output: str) -> Any:
     import json
     if output.startswith('OK: '):
         try:
@@ -88,31 +101,44 @@ def deserialize(output):
             raise ValueError('Failed to parse kitten output: {!r}'.format(output))
 
 
-def run_kitten(kitten, run_name='__main__'):
+def run_kitten(kitten: str, run_name: str = '__main__') -> None:
     import runpy
+    original_kitten_name = kitten
     kitten = resolved_kitten(kitten)
     set_debug(kitten)
     try:
         runpy.run_module('kittens.{}.main'.format(kitten), run_name=run_name)
+        return
     except ImportError:
-        raise SystemExit('No kitten named {}'.format(kitten))
+        pass
+    # Look for a custom kitten
+    if not kitten.endswith('.py'):
+        kitten += '.py'
+    from kitty.constants import config_dir
+    path = path_to_custom_kitten(config_dir, kitten)
+    if not os.path.exists(path):
+        print('Available builtin kittens:', file=sys.stderr)
+        for kitten in all_kitten_names():
+            print(kitten, file=sys.stderr)
+        raise SystemExit('No kitten named {}'.format(original_kitten_name))
+    m = runpy.run_path(path, init_globals={'sys': sys, 'os': os}, run_name='__run_kitten__')
+    m['main'](sys.argv)
 
 
-def all_kitten_names():
-    ans = getattr(all_kitten_names, 'ans', None)
-    if ans is None:
-        n = []
-        import glob
-        base = os.path.dirname(os.path.abspath(__file__))
-        for x in glob.glob(os.path.join(base, '*', '__init__.py')):
-            q = os.path.basename(os.path.dirname(x))
-            if q != 'tui':
-                n.append(q)
-        all_kitten_names.ans = ans = frozenset(n)
-    return ans
+@run_once
+def all_kitten_names() -> FrozenSet[str]:
+    try:
+        from importlib.resources import contents
+    except ImportError:
+        from importlib_resources import contents  # type: ignore
+    ans = []
+    for name in contents('kittens'):
+        if '__' not in name and '.' not in name and name != 'tui':
+            ans.append(name)
+    return frozenset(ans)
 
 
-def list_kittens():
+def list_kittens() -> None:
     print('You must specify the name of a kitten to run')
     print('Choose from:')
     print()
@@ -120,24 +146,24 @@ def list_kittens():
         print(kitten)
 
 
-def get_kitten_cli_docs(kitten):
-    sys.cli_docs = {}
+def get_kitten_cli_docs(kitten: str) -> Any:
+    setattr(sys, 'cli_docs', {})
     run_kitten(kitten, run_name='__doc__')
-    ans = sys.cli_docs
-    del sys.cli_docs
+    ans = getattr(sys, 'cli_docs')
+    delattr(sys, 'cli_docs')
     if 'help_text' in ans and 'usage' in ans and 'options' in ans:
         return ans
 
 
-def get_kitten_conf_docs(kitten):
-    sys.all_options = None
+def get_kitten_conf_docs(kitten: str) -> Definition:
+    setattr(sys, 'options_definition', None)
     run_kitten(kitten, run_name='__conf__')
-    ans = sys.all_options
-    del sys.all_options
-    return ans
+    ans = getattr(sys, 'options_definition')
+    delattr(sys, 'options_definition')
+    return cast(Definition, ans)
 
 
-def main():
+def main() -> None:
     try:
         args = sys.argv[1:]
         launch(args)

@@ -15,57 +15,90 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import suppress
+from typing import IO, Any, Dict, Iterable, List, Optional, cast
 
 import requests
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-build_path = os.path.abspath('../build-kitty')
 docs_dir = os.path.abspath('docs')
 publish_dir = os.path.abspath(os.path.join('..', 'kovidgoyal.github.io', 'kitty'))
-raw = open('kitty/constants.py').read()
-nv = re.search(
-    r'^version\s+=\s+\((\d+), (\d+), (\d+)\)', raw, flags=re.MULTILINE)
-version = '%s.%s.%s' % (nv.group(1), nv.group(2), nv.group(3))
-appname = re.search(
-    r"^appname\s+=\s+'([^']+)'", raw, flags=re.MULTILINE).group(1)
+with open('kitty/constants.py') as f:
+    raw = f.read()
+nv = re.search(r'^version: Version\s+=\s+Version\((\d+), (\d+), (\d+)\)', raw, flags=re.MULTILINE)
+if nv is not None:
+    version = '%s.%s.%s' % (nv.group(1), nv.group(2), nv.group(3))
+ap = re.search(r"^appname: str\s+=\s+'([^']+)'", raw, flags=re.MULTILINE)
+if ap is not None:
+    appname = ap.group(1)
 
 ALL_ACTIONS = 'man html build tag sdist upload website'.split()
 
 
-def call(*cmd, cwd=None):
+def call(*cmd: str, cwd: Optional[str] = None) -> None:
     if len(cmd) == 1:
-        cmd = shlex.split(cmd[0])
-    ret = subprocess.Popen(cmd, cwd=cwd).wait()
+        q = shlex.split(cmd[0])
+    else:
+        q = list(cmd)
+    ret = subprocess.Popen(q, cwd=cwd).wait()
     if ret != 0:
         raise SystemExit(ret)
 
 
-def run_build(args):
-    os.chdir(build_path)
-    call('./linux 64 kitty')
-    call('./osx kitty --sign-installers')
-    call('./osx shutdown')
-    call('./linux 32 kitty')
+def run_build(args: Any) -> None:
+    call('python ../bypy linux program')
+    call('python ../bypy linux 32 program')
+    call('python ../bypy macos program --sign-installers --notarize')
+    call('python ../bypy macos shutdown')
 
 
-def run_tag(args):
+def run_tag(args: Any) -> None:
     call('git push')
     call('git tag -s v{0} -m version-{0}'.format(version))
     call('git push origin v{0}'.format(version))
 
 
-def run_man(args):
+def run_man(args: Any) -> None:
     call('make FAIL_WARN=-W man', cwd=docs_dir)
 
 
-def run_html(args):
+def run_html(args: Any) -> None:
     call('make FAIL_WARN=-W html', cwd=docs_dir)
 
 
-def run_website(args):
+def add_analytics() -> None:
+    analytics = '''
+<!-- Global site tag (gtag.js) - Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-20736318-2"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-20736318-2');
+</script>
+'''
+    for dirpath, firnames, filenames in os.walk(publish_dir):
+        for fname in filenames:
+            if fname.endswith('.html'):
+                with open(os.path.join(dirpath, fname), 'r+b') as f:
+                    html = f.read().decode('utf-8')
+                    html = html.replace('<!-- kitty analytics placeholder -->', analytics, 1)
+                    f.seek(0), f.truncate()
+                    f.write(html.encode('utf-8'))
+
+
+def run_docs(args: Any) -> None:
+    subprocess.check_call(['make', 'docs'])
+
+
+def run_website(args: Any) -> None:
     if os.path.exists(publish_dir):
         shutil.rmtree(publish_dir)
     shutil.copytree(os.path.join(docs_dir, '_build', 'html'), publish_dir)
+    add_analytics()
+    with open(os.path.join(publish_dir, 'current-version.txt'), 'w') as f:
+        f.write(version)
     shutil.copy2(os.path.join(docs_dir, 'installer.sh'), publish_dir)
     installer = os.path.join(docs_dir, 'installer.py')
     subprocess.check_call([
@@ -77,7 +110,14 @@ def run_website(args):
     subprocess.check_call(['git', 'push'])
 
 
-def run_sdist(args):
+def sign_file(path: str) -> None:
+    subprocess.check_call([
+        os.environ['PENV'] + '/gpg-as-kovid', '--output', path + '.sig',
+        '--detach-sig', path
+    ])
+
+
+def run_sdist(args: Any) -> None:
     with tempfile.TemporaryDirectory() as tdir:
         base = os.path.join(tdir, f'kitty-{version}')
         os.mkdir(base)
@@ -88,32 +128,31 @@ def run_sdist(args):
             shutil.copytree(os.path.join(docs_dir, '_build', x), os.path.join(dest, x))
         dest = os.path.abspath(os.path.join('build', f'kitty-{version}.tar'))
         subprocess.check_call(['tar', '-cf', dest, os.path.basename(base)], cwd=tdir)
-        try:
+        with suppress(FileNotFoundError):
             os.remove(dest + '.xz')
-        except FileNotFoundError:
-            pass
         subprocess.check_call(['xz', '-9', dest])
+        sign_file(dest + '.xz')
 
 
-class ReadFileWithProgressReporting(io.BufferedReader):  # {{{
-    def __init__(self, path, mode='rb'):
-        io.BufferedReader.__init__(self, open(path, mode))
+class ReadFileWithProgressReporting(io.FileIO):  # {{{
+    def __init__(self, path: str):
+        io.FileIO.__init__(self, path, 'rb')
         self.seek(0, os.SEEK_END)
         self._total = self.tell()
         self.seek(0)
-        self.start_time = time.time()
+        self.start_time = time.monotonic()
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self._total
 
-    def read(self, size):
-        data = io.BufferedReader.read(self, size)
+    def read(self, size: int = -1) -> bytes:
+        data = io.FileIO.read(self, size)
         if data:
             self.report_progress(len(data))
         return data
 
-    def report_progress(self, size):
-        def write(*args):
+    def report_progress(self, size: int) -> None:
+        def write(*args: str) -> None:
             print(*args, end='')
 
         write('\x1b[s\x1b[K')
@@ -121,7 +160,7 @@ class ReadFileWithProgressReporting(io.BufferedReader):  # {{{
         mb_pos = self.tell() / float(1024**2)
         mb_tot = self._total / float(1024**2)
         kb_pos = self.tell() / 1024.0
-        kb_rate = kb_pos / (time.time() - self.start_time)
+        kb_rate = kb_pos / (time.monotonic() - self.start_time)
         bit_rate = kb_rate * 1024
         eta = int((self._total - self.tell()) / bit_rate) + 1
         eta_m, eta_s = eta / 60, eta % 60
@@ -140,19 +179,12 @@ class ReadFileWithProgressReporting(io.BufferedReader):  # {{{
 
 
 class Base(object):  # {{{
-    def __init__(self):
-        self.d = os.path.dirname
-        self.j = os.path.join
-        self.a = os.path.abspath
-        self.b = os.path.basename
-        self.s = os.path.splitext
-        self.e = os.path.exists
 
-    def info(self, *args, **kwargs):
+    def info(self, *args: Any, **kwargs: Any) -> None:
         print(*args, **kwargs)
         sys.stdout.flush()
 
-    def warn(self, *args, **kwargs):
+    def warn(self, *args: Any, **kwargs: Any) -> None:
         print('\n' + '_' * 20, 'WARNING', '_' * 20)
         print(*args, **kwargs)
         print('_' * 50)
@@ -166,13 +198,15 @@ class GitHub(Base):  # {{{
 
     API = 'https://api.github.com/'
 
-    def __init__(self,
-                 files,
-                 reponame,
-                 version,
-                 username,
-                 password,
-                 replace=False):
+    def __init__(
+        self,
+        files: Dict[str, str],
+        reponame: str,
+        version: str,
+        username: str,
+        password: str,
+        replace: bool = False
+    ):
         self.files, self.reponame, self.version, self.username, self.password, self.replace = (
             files, reponame, version, username, password, replace)
         self.current_tag_name = 'v' + self.version
@@ -180,7 +214,7 @@ class GitHub(Base):  # {{{
         s.auth = (self.username, self.password)
         s.headers.update({'Accept': 'application/vnd.github.v3+json'})
 
-    def __call__(self):
+    def __call__(self) -> None:
         releases = self.releases()
         # self.clean_older_releases(releases)
         release = self.create_release(releases)
@@ -218,7 +252,7 @@ class GitHub(Base):  # {{{
             if r.status_code != 200:
                 self.fail(r, 'Failed to set label for %s' % fname)
 
-    def clean_older_releases(self, releases):
+    def clean_older_releases(self, releases: Iterable[Dict[str, Any]]) -> None:
         for release in releases:
             if release.get(
                     'assets',
@@ -235,8 +269,8 @@ class GitHub(Base):  # {{{
                             'Failed to delete obsolete asset: %s for release: %s'
                             % (asset['name'], release['tag_name']))
 
-    def do_upload(self, url, path, desc, fname):
-        mime_type = mimetypes.guess_type(fname)[0]
+    def do_upload(self, url: str, path: str, desc: str, fname: str) -> requests.Response:
+        mime_type = mimetypes.guess_type(fname)[0] or 'application/octet-stream'
         self.info('Uploading to GitHub: %s (%s)' % (fname, mime_type))
         with ReadFileWithProgressReporting(path) as f:
             return self.requests.post(
@@ -246,97 +280,104 @@ class GitHub(Base):  # {{{
                     'Content-Length': str(f._total)
                 },
                 params={'name': fname},
-                data=f)
+                data=cast(IO[bytes], f))
 
-    def fail(self, r, msg):
+    def fail(self, r: requests.Response, msg: str) -> None:
         print(msg, ' Status Code: %s' % r.status_code, file=sys.stderr)
         print("JSON from response:", file=sys.stderr)
         pprint.pprint(dict(r.json()), stream=sys.stderr)
         raise SystemExit(1)
 
-    def already_exists(self, r):
+    def already_exists(self, r: requests.Response) -> bool:
         error_code = r.json().get('errors', [{}])[0].get('code', None)
-        return error_code == 'already_exists'
+        return bool(error_code == 'already_exists')
 
-    def existing_assets(self, release_id):
+    def existing_assets(self, release_id: str) -> Dict[str, str]:
         url = self.API + 'repos/%s/%s/releases/%s/assets' % (
             self.username, self.reponame, release_id)
         r = self.requests.get(url)
         if r.status_code != 200:
-            self.fail('Failed to get assets for release')
+            self.fail(r, 'Failed to get assets for release')
         return {asset['name']: asset['id'] for asset in r.json()}
 
-    def releases(self):
+    def releases(self) -> List[Dict[str, Any]]:
         url = self.API + 'repos/%s/%s/releases' % (self.username, self.reponame
                                                    )
         r = self.requests.get(url)
         if r.status_code != 200:
             self.fail(r, 'Failed to list releases')
-        return r.json()
+        return list(r.json())
 
-    def create_release(self, releases):
+    def create_release(self, releases: Iterable[Dict[str, str]]) -> Dict[str, Any]:
         ' Create a release on GitHub or if it already exists, return the existing release '
         for release in releases:
             # Check for existing release
             if release['tag_name'] == self.current_tag_name:
                 return release
-        url = self.API + 'repos/%s/%s/releases' % (self.username, self.reponame
-                                                   )
+        url = self.API + 'repos/%s/%s/releases' % (self.username, self.reponame)
         r = self.requests.post(
             url,
             data=json.dumps({
                 'tag_name': self.current_tag_name,
                 'target_commitish': 'master',
                 'name': 'version %s' % self.version,
-                'body': 'Release version %s' % self.version,
+                'body': f'Release version {self.version}.'
+                ' For changelog, see https://sw.kovidgoyal.net/kitty/changelog.html'
+                ' GPG key used for signing tarballs is: https://calibre-ebook.com/signatures/kovid.gpg',
                 'draft': False,
                 'prerelease': False
             }))
         if r.status_code != 201:
             self.fail(r, 'Failed to create release for version: %s' %
                       self.version)
-        return r.json()
-
-
+        return dict(r.json())
 # }}}
 
 
-def get_github_data():
-    with open(os.environ['PENV'] + '/github') as f:
+def get_github_data() -> Dict[str, str]:
+    with open(os.environ['PENV'] + '/github-token') as f:
         un, pw = f.read().strip().split(':')
     return {'username': un, 'password': pw}
 
 
-def run_upload(args):
-    files = {
-        os.path.join(build_path, 'build', f.format(version)): desc
-        for f, desc in {
-            'osx/dist/kitty-{}.dmg': 'macOS dmg',
-            'linux/64/sw/dist/kitty-{}-x86_64.txz': 'Linux amd64 binary bundle',
-            'linux/32/sw/dist/kitty-{}-i686.txz': 'Linux x86 binary bundle',
-        }.items()
-    }
+def run_upload(args: Any) -> None:
+    files = {}
+    signatures = {}
+    for f, desc in {
+        'macos/dist/kitty-{}.dmg': 'macOS dmg',
+        'linux/64/sw/dist/kitty-{}-x86_64.txz': 'Linux amd64 binary bundle',
+        'linux/32/sw/dist/kitty-{}-i686.txz': 'Linux x86 binary bundle',
+    }.items():
+        path = os.path.join('bypy', 'b', f.format(version))
+        if not os.path.exists(path):
+            raise SystemExit(f'The installer {path} does not exist')
+        files[path] = desc
+        signatures[path] = f'GPG signature for {desc}'
     files[f'build/kitty-{version}.tar.xz'] = 'Source code'
+    files[f'build/kitty-{version}.tar.xz.sig'] = 'Source code GPG signature'
+    for path, desc in signatures.items():
+        sign_file(path)
+        files[path + '.sig'] = desc
     for f in files:
         if not os.path.exists(f):
-            raise SystemExit('The installer {} does not exist'.format(f))
+            raise SystemExit(f'The release artifact {f} does not exist')
     gd = get_github_data()
     gh = GitHub(files, appname, version, gd['username'], gd['password'])
     gh()
 
 
-def require_git_master(branch='master'):
+def require_git_master(branch: str = 'master') -> None:
     b = subprocess.check_output(['git', 'symbolic-ref', '--short', 'HEAD']).decode('utf-8').strip()
     if b != branch:
         raise SystemExit('You must be in the {} git branch'.format(branch))
 
 
-def require_penv():
+def require_penv() -> None:
     if 'PENV' not in os.environ:
         raise SystemExit('The PENV env var is not present, required for uploading releases')
 
 
-def main():
+def main() -> None:
     require_git_master()
     require_penv()
     parser = argparse.ArgumentParser(description='Publish kitty')
@@ -366,6 +407,8 @@ def main():
             ans = 'n'
         if ans.lower() != 'y':
             return
+    if actions == ['website']:
+        actions.insert(0, 'docs')
     for action in actions:
         print('Running', action)
         cwd = os.getcwd()

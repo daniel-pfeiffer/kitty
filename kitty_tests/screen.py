@@ -1,9 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+from kitty.fast_data_types import (
+    DECAWM, DECCOLM, DECOM, IRM, Cursor, parse_bytes
+)
+from kitty.marks import marker_from_function, marker_from_regex
+
 from . import BaseTest
-from kitty.fast_data_types import DECAWM, IRM, Cursor, DECCOLM, DECOM
 
 
 class TestScreen(BaseTest):
@@ -89,6 +93,17 @@ class TestScreen(BaseTest):
         self.ae(str(s.line(4)), 'a\u0306b1\u030623')
         self.ae((s.cursor.x, s.cursor.y), (2, 4))
 
+    def test_rep(self):
+        s = self.create_screen()
+        s.draw('a')
+        parse_bytes(s, b'\x1b[b')
+        self.ae(str(s.line(0)), 'aa')
+        parse_bytes(s, b'\x1b[3b')
+        self.ae(str(s.line(0)), 'a'*5)
+        s.draw(' ')
+        parse_bytes(s, b'\x1b[3b')
+        self.ae(str(s.line(1)), ' '*4)
+
     def test_emoji_skin_tone_modifiers(self):
         s = self.create_screen()
         q = chr(0x1f469) + chr(0x1f3fd)
@@ -138,6 +153,13 @@ class TestScreen(BaseTest):
         self.ae(str(s.line(0)), 'ade')
         self.assertTrue(s.line(0).cursor_from(4).bold)
         self.assertFalse(s.line(0).cursor_from(2).bold)
+        s = self.create_screen()
+        s.set_margins(1, 2)
+        s.cursor.y = 3
+        s.draw('abcde')
+        s.cursor.x = 0
+        s.delete_characters(2)
+        self.ae('cde', str(s.line(s.cursor.y)))
 
         init()
         s.erase_characters(2)
@@ -175,21 +197,29 @@ class TestScreen(BaseTest):
         def all_lines(s):
             return tuple(str(s.line(i)) for i in range(s.lines))
 
+        def continuations(s):
+            return tuple(s.line(i).is_continued() for i in range(s.lines))
+
         init()
-        s.erase_in_display()
+        s.erase_in_display(0)
         self.ae(all_lines(s), ('12345', '12', '', '', ''))
+        self.ae(continuations(s), (False, True, False, False, False))
 
         init()
         s.erase_in_display(1)
         self.ae(all_lines(s), ('', '   45', '12345', '12345', '12345'))
+        self.ae(continuations(s), (False, False, True, True, True))
 
         init()
         s.erase_in_display(2)
         self.ae(all_lines(s), ('', '', '', '', ''))
         self.assertTrue(s.line(0).cursor_from(1).bold)
+        self.ae(continuations(s), (False, False, False, False, False))
+
         init()
         s.erase_in_display(2, True)
         self.ae(all_lines(s), ('', '', '', '', ''))
+        self.ae(continuations(s), (False, False, False, False, False))
         self.assertFalse(s.line(0).cursor_from(1).bold)
 
     def test_cursor_movement(self):
@@ -240,8 +270,7 @@ class TestScreen(BaseTest):
         self.ae(str(s.line(2)), '4'*5)
         s.resize(5, 1)
         self.ae(str(s.line(0)), '4')
-        hb = s.historybuf
-        self.ae(str(hb), '3\n3\n3\n3\n3\n2')
+        self.ae(str(s.historybuf), '3\n3\n3\n3\n3\n2')
         s = self.create_screen(scrollback=20)
         s.draw(''.join(str(i) * s.columns for i in range(s.lines*2)))
         self.ae(str(s.linebuf), '55555\n66666\n77777\n88888\n99999')
@@ -274,6 +303,65 @@ class TestScreen(BaseTest):
         s.resize(s.lines - 1, s.columns)
         self.ae(x_before, s.cursor.x)
 
+    def test_scrollback_fill_after_resize(self):
+        def prepare_screen(content=()):
+            ans = self.create_screen(options={'scrollback_fill_enlarged_window': True})
+            for line in content:
+                ans.draw(line)
+                ans.linefeed()
+                ans.carriage_return()
+            return ans
+
+        def assert_lines(*lines):
+            return self.ae(lines, tuple(str(s.line(i)) for i in range(s.lines)))
+
+        # test the reverse scroll function
+        s = prepare_screen(map(str, range(6)))
+        assert_lines('2', '3', '4', '5', '')
+        s.reverse_scroll(2, True)
+        assert_lines('0', '1', '2', '3', '4')
+
+        # Height increased, width unchanged → pull down lines to fill new space at the top
+        s = prepare_screen(map(str, range(6)))
+        assert_lines('2', '3', '4', '5', '')
+        dist_from_bottom = s.lines - s.cursor.y
+        s.resize(7, s.columns)
+        assert_lines('0', '1', '2', '3', '4', '5', '')
+        self.ae(dist_from_bottom, s.lines - s.cursor.y)
+
+        # Height increased, width increased → rewrap, pull down
+        s = prepare_screen(['0', '1', '2', '3' * 15])
+        assert_lines('2', '33333', '33333', '33333', '')
+        s.resize(7, 12)
+        assert_lines('0', '1', '2', '333333333333', '333', '', '')
+
+        # Height increased, width decreased → rewrap, pull down if possible
+        s = prepare_screen(['0', '1', '2', '3' * 5])
+        assert_lines('0', '1', '2', '33333', '')
+        s.resize(6, 4)
+        assert_lines('0', '1', '2', '3333', '3', '')
+
+        # Height unchanged, width increased → rewrap, pull down if possible
+        s = prepare_screen(['0', '1', '2', '3' * 15])
+        assert_lines('2', '33333', '33333', '33333', '')
+        s.resize(s.lines, 12)
+        assert_lines('1', '2', '333333333333', '333', '')
+
+        # Height decreased, width increased → rewrap, pull down if possible
+        s = prepare_screen(['0', '1', '2', '3' * 15])
+        assert_lines('2', '33333', '33333', '33333', '')
+        s.resize(4, 12)
+        assert_lines('2', '333333333333', '333', '')
+
+        # Height increased with large continued text
+        s = self.create_screen(options={'scrollback_fill_enlarged_window': True})
+        s.draw(('x' * (s.columns * s.lines * 2)) + 'abcde')
+        s.carriage_return(), s.linefeed()
+        s.draw('>')
+        assert_lines('xxxxx', 'xxxxx', 'xxxxx', 'abcde', '>')
+        s.resize(s.lines + 2, s.columns)
+        assert_lines('xxxxx', 'xxxxx', 'xxxxx', 'xxxxx', 'xxxxx', 'abcde', '>')
+
     def test_tab_stops(self):
         # Taken from vttest/main.c
         s = self.create_screen(cols=80, lines=2)
@@ -293,11 +381,7 @@ class TestScreen(BaseTest):
             s.tab()
             s.draw('*')
         s.cursor_position(2, 2)
-        for col in range(2, s.columns - 1, 6):
-            for i in range(5):
-                s.draw(' ')
-            s.draw('*')
-        self.ae(str(s.line(0)), str(s.line(1)))
+        self.ae(str(s.line(0)), '\t*'*13)
 
     def test_margins(self):
         # Taken from vttest/main.c
@@ -336,9 +420,10 @@ class TestScreen(BaseTest):
                     s.cursor_position(region + 1, 1), nl()
                     s.cursor_position(region, 1), s.draw(ch)
                     s.cursor_position(region, s.columns), s.draw(ch.lower())
-            for l in range(2, region + 2):
-                c = chr(ord('I') + l - 2)
-                self.ae(c + ' ' * (s.columns - 2) + c.lower(), str(s.line(l)))
+            for ln in range(2, region + 2):
+                c = chr(ord('I') + ln - 2)
+                before = '\t' if ln % 4 == 0 else ' '
+                self.ae(c + ' ' * (s.columns - 3) + before + c.lower(), str(s.line(ln)))
             s.reset_mode(DECOM)
         # Test that moving cursor outside the margins works as expected
         s = self.create_screen(10, 10)
@@ -422,23 +507,385 @@ class TestScreen(BaseTest):
             if i != 0:
                 s.carriage_return(), s.linefeed()
             s.draw(str(i) * s.columns)
-        s.start_selection(0, 0, False)
-        s.update_selection(4, 4, True)
+        s.start_selection(0, 0)
+        s.update_selection(4, 4)
         expected = ('55555', '\n66666', '\n77777', '\n88888', '\n99999')
         self.ae(s.text_for_selection(), expected)
         s.scroll(2, True)
         self.ae(s.text_for_selection(), expected)
 
+    def test_variation_selectors(self):
+        s = self.create_screen()
+        s.draw('\U0001f610')
+        self.ae(s.cursor.x, 2)
+        s.carriage_return(), s.linefeed()
+        s.draw('\U0001f610\ufe0e')
+        self.ae(s.cursor.x, 1)
+        s.carriage_return(), s.linefeed()
+        s.draw('\u25b6')
+        self.ae(s.cursor.x, 1)
+        s.carriage_return(), s.linefeed()
+        s.draw('\u25b6\ufe0f')
+        self.ae(s.cursor.x, 2)
+
     def test_serialize(self):
+        from kitty.window import as_text
         s = self.create_screen()
         s.draw('ab' * s.columns)
         s.carriage_return(), s.linefeed()
         s.draw('c')
 
-        def as_text(as_ansi=False):
-            d = []
-            s.as_text(d.append, as_ansi)
-            return ''.join(d)
+        self.ae(as_text(s), 'ababababab\nc\n\n')
+        self.ae(as_text(s, True), '\x1b[mababa\x1b[mbabab\n\x1b[mc\n\n')
 
-        self.ae(as_text(), 'ababababab\nc\n\n')
-        self.ae(as_text(True), 'ababababab\nc\n\n')
+        s = self.create_screen(cols=2, lines=2, scrollback=2)
+        for i in range(1, 7):
+            s.select_graphic_rendition(30 + i)
+            s.draw(f'{i}' * s.columns)
+        self.ae(as_text(s, True, True), '\x1b[m\x1b[31m11\x1b[m\x1b[32m22\x1b[m\x1b[33m33\x1b[m\x1b[34m44\x1b[m\x1b[m\x1b[35m55\x1b[m\x1b[36m66')
+
+        def set_link(url=None, id=None):
+            parse_bytes(s, '\x1b]8;id={};{}\x1b\\'.format(id or '', url or '').encode('utf-8'))
+
+        s = self.create_screen()
+        s.draw('a')
+        set_link('moo', 'foo')
+        s.draw('bcdef')
+        self.ae(as_text(s, True), '\x1b[ma\x1b]8;id=foo;moo\x1b\\bcde\x1b[mf\n\n\n\x1b]8;;\x1b\\')
+        set_link()
+        s.draw('gh')
+        self.ae(as_text(s, True), '\x1b[ma\x1b]8;id=foo;moo\x1b\\bcde\x1b[mf\x1b]8;;\x1b\\gh\n\n\n')
+        s = self.create_screen()
+        s.draw('a')
+        set_link('moo')
+        s.draw('bcdef')
+        self.ae(as_text(s, True), '\x1b[ma\x1b]8;;moo\x1b\\bcde\x1b[mf\n\n\n\x1b]8;;\x1b\\')
+
+    def test_pagerhist(self):
+        hsz = 8
+        s = self.create_screen(cols=2, lines=2, scrollback=2, options={'scrollback_pager_history_size': hsz})
+
+        def contents():
+            return s.historybuf.pagerhist_as_text()
+
+        def line(i):
+            q.append('\x1b[m' + f'{i}' * s.columns + '\r')
+
+        def w(x):
+            s.historybuf.pagerhist_write(x)
+
+        def test():
+            expected = ''.join(q)
+            maxlen = hsz
+            extra = len(expected) - maxlen
+            if extra > 0:
+                expected = expected[extra:]
+            got = contents()
+            self.ae(got, expected)
+
+        q = []
+        for i in range(4):
+            s.draw(f'{i}' * s.columns)
+        self.ae(contents(), '')
+        s.draw('4' * s.columns), line(0), test()
+        s.draw('5' * s.columns), line(1), test()
+        s.draw('6' * s.columns), line(2), test()
+        s.draw('7' * s.columns), line(3), test()
+        s.draw('8' * s.columns), line(4), test()
+        s.draw('9' * s.columns), line(5), test()
+
+        s = self.create_screen(options={'scrollback_pager_history_size': 2048})
+        text = '\x1b[msoft\r\x1b[mbreak\nnext😼cat'
+        w(text)
+        self.ae(contents(), text + '\n')
+        s.historybuf.pagerhist_rewrap(2)
+        self.ae(contents(), '\x1b[mso\rft\x1b[m\rbr\rea\rk\nne\rxt\r😼\rca\rt\n')
+
+        s = self.create_screen(options={'scrollback_pager_history_size': 8})
+        w('😼')
+        self.ae(contents(), '😼\n')
+        w('abcd')
+        self.ae(contents(), '😼abcd\n')
+        w('e')
+        self.ae(contents(), 'abcde\n')
+
+    def test_user_marking(self):
+
+        def cells(*a, y=0, mark=3):
+            return [(x, y, mark) for x in a]
+
+        s = self.create_screen()
+        s.draw('abaa')
+        s.carriage_return(), s.linefeed()
+        s.draw('xyxyx')
+        s.set_marker(marker_from_regex('a', 3))
+        self.ae(s.marked_cells(), cells(0, 2, 3))
+        s.set_marker()
+        self.ae(s.marked_cells(), [])
+
+        def mark_x(text):
+            col = 0
+            for i, c in enumerate(text):
+                if c == 'x':
+                    col += 1
+                    yield i, i, col
+
+        s.set_marker(marker_from_function(mark_x))
+        self.ae(s.marked_cells(), [(0, 1, 1), (2, 1, 2), (4, 1, 3)])
+        s = self.create_screen(lines=5, scrollback=10)
+        for i in range(15):
+            s.draw(str(i))
+            if i != 14:
+                s.carriage_return(), s.linefeed()
+        s.set_marker(marker_from_regex(r'\d+', 3))
+        for i in range(10):
+            self.assertTrue(s.scroll_to_next_mark())
+            self.ae(s.scrolled_by, i + 1)
+        self.ae(s.scrolled_by, 10)
+        for i in range(10):
+            self.assertTrue(s.scroll_to_next_mark(0, False))
+            self.ae(s.scrolled_by, 10 - i - 1)
+        self.ae(s.scrolled_by, 0)
+
+        s = self.create_screen()
+        s.draw('🐈ab')
+        s.set_marker(marker_from_regex('🐈', 3))
+        self.ae(s.marked_cells(), cells(0, 1))
+        s.set_marker(marker_from_regex('🐈a', 3))
+        self.ae(s.marked_cells(), cells(0, 1, 2))
+        s.set_marker(marker_from_regex('a', 3))
+        self.ae(s.marked_cells(), cells(2))
+        s = self.create_screen(cols=20)
+        s.tab()
+        s.draw('ab')
+        s.set_marker(marker_from_regex('a', 3))
+        self.ae(s.marked_cells(), cells(8))
+        s.set_marker(marker_from_regex('\t', 3))
+        self.ae(s.marked_cells(), cells(*range(8)))
+        s = self.create_screen()
+        s.cursor.x = 2
+        s.draw('x')
+        s.cursor.x += 1
+        s.draw('x')
+        s.set_marker(marker_from_function(mark_x))
+        self.ae(s.marked_cells(), [(2, 0, 1), (4, 0, 2)])
+
+    def test_hyperlinks(self):
+        s = self.create_screen()
+        self.ae(s.line(0).hyperlink_ids(), tuple(0 for x in range(s.columns)))
+
+        def set_link(url=None, id=None):
+            parse_bytes(s, '\x1b]8;id={};{}\x1b\\'.format(id or '', url or '').encode('utf-8'))
+
+        set_link('url-a', 'a')
+        self.ae(s.line(0).hyperlink_ids(), tuple(0 for x in range(s.columns)))
+        s.draw('a')
+        self.ae(s.line(0).hyperlink_ids(), (1,) + tuple(0 for x in range(s.columns - 1)))
+        s.draw('bc')
+        self.ae(s.line(0).hyperlink_ids(), (1, 1, 1, 0, 0))
+        set_link()
+        s.draw('d')
+        self.ae(s.line(0).hyperlink_ids(), (1, 1, 1, 0, 0))
+        set_link('url-a', 'a')
+        s.draw('efg')
+        self.ae(s.line(0).hyperlink_ids(), (1, 1, 1, 0, 1))
+        self.ae(s.line(1).hyperlink_ids(), (1, 1, 0, 0, 0))
+        set_link('url-b')
+        s.draw('hij')
+        self.ae(s.line(1).hyperlink_ids(), (1, 1, 2, 2, 2))
+        set_link()
+        self.ae([('a:url-a', 1), (':url-b', 2)], s.hyperlinks_as_list())
+        s.garbage_collect_hyperlink_pool()
+        self.ae([('a:url-a', 1), (':url-b', 2)], s.hyperlinks_as_list())
+        for i in range(s.lines + 2):
+            s.linefeed()
+        s.garbage_collect_hyperlink_pool()
+        self.ae([('a:url-a', 1), (':url-b', 2)], s.hyperlinks_as_list())
+        for i in range(s.lines * 2):
+            s.linefeed()
+        s.garbage_collect_hyperlink_pool()
+        self.assertFalse(s.hyperlinks_as_list())
+        set_link('url-a', 'x')
+        s.draw('a')
+        set_link('url-a', 'y')
+        s.draw('a')
+        set_link()
+        self.ae([('x:url-a', 1), ('y:url-a', 2)], s.hyperlinks_as_list())
+
+        s = self.create_screen()
+        set_link('u' * 2048)
+        s.draw('a')
+        self.ae([(':' + 'u' * 2045, 1)], s.hyperlinks_as_list())
+        s = self.create_screen()
+        set_link('u' * 2048, 'i' * 300)
+        s.draw('a')
+        self.ae([('i'*256 + ':' + 'u' * (2045 - 256), 1)], s.hyperlinks_as_list())
+
+        s = self.create_screen()
+        set_link('1'), s.draw('1')
+        set_link('2'), s.draw('2')
+        set_link('3'), s.draw('3')
+        s.cursor.x = 1
+        set_link(), s.draw('X')
+        self.ae(s.line(0).hyperlink_ids(), (1, 0, 3, 0, 0))
+        self.ae([(':1', 1), (':2', 2), (':3', 3)], s.hyperlinks_as_list())
+        s.garbage_collect_hyperlink_pool()
+        self.ae([(':1', 1), (':3', 2)], s.hyperlinks_as_list())
+        set_link('3'), s.draw('3')
+        self.ae([(':1', 1), (':3', 2)], s.hyperlinks_as_list())
+        set_link('4'), s.draw('4')
+        self.ae([(':1', 1), (':3', 2), (':4', 3)], s.hyperlinks_as_list())
+
+        s = self.create_screen()
+        set_link('1'), s.draw('1')
+        set_link('2'), s.draw('2')
+        set_link('1'), s.draw('1')
+        self.ae([(':2', 2), (':1', 1)], s.hyperlinks_as_list())
+
+        s = self.create_screen()
+        set_link('1'), s.draw('12'), set_link(), s.draw('X'), set_link('1'), s.draw('3')
+        s.linefeed(), s.carriage_return()
+        s.draw('abc')
+        s.linefeed(), s.carriage_return()
+        set_link(), s.draw('Z ')
+        set_link('1'), s.draw('xyz')
+        s.linefeed(), s.carriage_return()
+        set_link('2'), s.draw('Z Z')
+        self.assertIsNone(s.current_url_text())
+        self.assertIsNone(s.hyperlink_at(0, 4))
+        self.assertIsNone(s.current_url_text())
+        self.ae(s.hyperlink_at(0, 0), '1')
+        self.ae(s.current_url_text(), '123abcxyz')
+        self.ae('1', s.hyperlink_at(3, 2))
+        self.ae(s.current_url_text(), '123abcxyz')
+        self.ae('2', s.hyperlink_at(1, 3))
+        self.ae(s.current_url_text(), 'Z Z')
+
+    def test_bottom_margin(self):
+        s = self.create_screen(cols=80, lines=6, scrollback=4)
+        s.set_margins(0, 5)
+        for i in range(8):
+            s.draw(str(i))
+            s.linefeed()
+            s.carriage_return()
+
+        self.ae(str(s.linebuf), '4\n5\n6\n7\n\n')
+        self.ae(str(s.historybuf), '3\n2\n1\n0')
+
+    def test_top_margin(self):
+        s = self.create_screen(cols=80, lines=6, scrollback=4)
+        s.set_margins(2, 6)
+        for i in range(8):
+            s.draw(str(i))
+            s.linefeed()
+            s.carriage_return()
+
+        self.ae(str(s.linebuf), '0\n4\n5\n6\n7\n')
+        self.ae(str(s.historybuf), '')
+
+    def test_top_and_bottom_margin(self):
+        s = self.create_screen(cols=80, lines=6, scrollback=4)
+        s.set_margins(2, 5)
+        for i in range(8):
+            s.draw(str(i))
+            s.linefeed()
+            s.carriage_return()
+
+        self.ae(str(s.linebuf), '0\n5\n6\n7\n\n')
+        self.ae(str(s.historybuf), '')
+
+    def test_key_encoding_flags_stack(self):
+        s = self.create_screen()
+        c = s.callbacks
+
+        def w(code, p1='', p2=''):
+            p = f'{p1}'
+            if p2:
+                p += f';{p2}'
+            return parse_bytes(s, f'\033[{code}{p}u'.encode('ascii'))
+
+        def ac(flags):
+            parse_bytes(s, '\033[?u'.encode('ascii'))
+            self.ae(c.wtcbuf, f'\033[?{flags}u'.encode('ascii'))
+            c.clear()
+
+        ac(0)
+        w('=', 0b1001)
+        ac(0b1001)
+        w('=', 0b0011, 2)
+        ac(0b1011)
+        w('=', 0b0110, 3)
+        ac(0b1001)
+        s.reset()
+        ac(0)
+
+        w('>', 0b0011)
+        ac(0b0011)
+        w('=', 0b1111)
+        ac(0b1111)
+        w('>', 0b10)
+        ac(0b10)
+        w('<')
+        ac(0b1111)
+        for i in range(10):
+            w('<')
+            ac(0)
+        s.reset()
+
+        for i in range(1, 16):
+            w('>', i)
+        ac(15)
+        w('<'), ac(14), w('<'), ac(13)
+
+    def test_color_stack(self):
+        s = self.create_screen()
+        c = s.callbacks
+
+        def w(code):
+            return parse_bytes(s, ('\033[' + code).encode('ascii'))
+
+        def ac(idx, count):
+            self.ae(c.wtcbuf, f'\033[{idx};{count}#Q'.encode('ascii'))
+            c.clear()
+
+        w('#R')
+        ac(0, 0)
+
+        w('#P')
+        w('#R')
+        ac(0, 1)
+        w('#10P')
+        w('#R')
+        ac(0, 1)
+        w('#Q')
+        w('#R')
+        ac(0, 0)
+        for i in range(20):
+            w('#P')
+        w('#R')
+        ac(9, 10)
+
+    def test_detect_url(self):
+        s = self.create_screen(cols=30)
+
+        def ae(expected, x=3, y=0):
+            s.detect_url(x, y)
+            url = ''.join(s.text_for_marked_url())
+            self.assertEqual(expected, url)
+
+        def t(url, x=0, y=0, before='', after=''):
+            s.reset()
+            s.cursor.x = x
+            s.cursor.y = y
+            s.draw(before + url + after)
+            ae(url, x=x + 1 + len(before), y=y)
+
+        t('http://moo.com')
+        t('http://moo.com/something?else=+&what-')
+        for (st, e) in '() {} [] <>'.split():
+            t('http://moo.com', before=st, after=e)
+        for trailer in ')-=]}':
+            t('http://moo.com' + trailer)
+        for trailer in '{([':
+            t('http://moo.com', after=trailer)
+        t('http://moo.com', x=s.columns - 9)

@@ -1,14 +1,20 @@
-// unicode data, built from the unicode standard on: 2018-08-04
+// unicode data, built from the unicode standard on: 2021-04-02
 // see gen-wcwidth.py
 #pragma once
 #include "data-types.h"
 
 START_ALLOW_CASE_RANGE
 
-static int
+static inline int
 wcwidth_std(int32_t code) {
+	if (LIKELY(0x20 <= code && code <= 0x7e)) return 1;
 	switch(code) {
-		// Marks (2240 codepoints) {{{
+		// Flags (26 codepoints) {{{
+		case 0x1f1e6 ... 0x1f1ff:
+			return 2;
+		// }}}
+
+		// Marks (2302 codepoints) {{{
 		case 0x0:
 			return 0;
 		case 0x300 ... 0x36f:
@@ -127,7 +133,7 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0xb4b ... 0xb4d:
 			return 0;
-		case 0xb56 ... 0xb57:
+		case 0xb55 ... 0xb57:
 			return 0;
 		case 0xb62 ... 0xb63:
 			return 0;
@@ -181,7 +187,7 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0xd62 ... 0xd63:
 			return 0;
-		case 0xd82 ... 0xd83:
+		case 0xd81 ... 0xd83:
 			return 0;
 		case 0xdca:
 			return 0;
@@ -201,9 +207,7 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0xeb1:
 			return 0;
-		case 0xeb4 ... 0xeb9:
-			return 0;
-		case 0xebb ... 0xebc:
+		case 0xeb4 ... 0xebc:
 			return 0;
 		case 0xec8 ... 0xecd:
 			return 0;
@@ -277,7 +281,7 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x1a7f:
 			return 0;
-		case 0x1ab0 ... 0x1abe:
+		case 0x1ab0 ... 0x1ac0:
 			return 0;
 		case 0x1b00 ... 0x1b04:
 			return 0;
@@ -299,7 +303,7 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x1ced:
 			return 0;
-		case 0x1cf2 ... 0x1cf4:
+		case 0x1cf4:
 			return 0;
 		case 0x1cf7 ... 0x1cf9:
 			return 0;
@@ -336,6 +340,8 @@ wcwidth_std(int32_t code) {
 		case 0xa80b:
 			return 0;
 		case 0xa823 ... 0xa827:
+			return 0;
+		case 0xa82c:
 			return 0;
 		case 0xa880 ... 0xa881:
 			return 0;
@@ -407,6 +413,8 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x10d24 ... 0x10d27:
 			return 0;
+		case 0x10eab ... 0x10eac:
+			return 0;
 		case 0x10f46 ... 0x10f50:
 			return 0;
 		case 0x11000 ... 0x11002:
@@ -430,6 +438,8 @@ wcwidth_std(int32_t code) {
 		case 0x111b3 ... 0x111c0:
 			return 0;
 		case 0x111c9 ... 0x111cc:
+			return 0;
+		case 0x111ce ... 0x111cf:
 			return 0;
 		case 0x1122c ... 0x11237:
 			return 0;
@@ -475,6 +485,22 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x1182c ... 0x1183a:
 			return 0;
+		case 0x11930 ... 0x11935:
+			return 0;
+		case 0x11937 ... 0x11938:
+			return 0;
+		case 0x1193b ... 0x1193e:
+			return 0;
+		case 0x11940:
+			return 0;
+		case 0x11942 ... 0x11943:
+			return 0;
+		case 0x119d1 ... 0x119d7:
+			return 0;
+		case 0x119da ... 0x119e0:
+			return 0;
+		case 0x119e4:
+			return 0;
 		case 0x11a01 ... 0x11a0a:
 			return 0;
 		case 0x11a33 ... 0x11a39:
@@ -517,9 +543,15 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x16b30 ... 0x16b36:
 			return 0;
-		case 0x16f51 ... 0x16f7e:
+		case 0x16f4f:
+			return 0;
+		case 0x16f51 ... 0x16f87:
 			return 0;
 		case 0x16f8f ... 0x16f92:
+			return 0;
+		case 0x16fe4:
+			return 0;
+		case 0x16ff0 ... 0x16ff1:
 			return 0;
 		case 0x1bc9d ... 0x1bc9e:
 			return 0;
@@ -557,6 +589,10 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x1e026 ... 0x1e02a:
 			return 0;
+		case 0x1e130 ... 0x1e136:
+			return 0;
+		case 0x1e2ec ... 0x1e2ef:
+			return 0;
 		case 0x1e8d0 ... 0x1e8d6:
 			return 0;
 		case 0x1e944 ... 0x1e94a:
@@ -567,7 +603,7 @@ wcwidth_std(int32_t code) {
 			return 0;
 		// }}}
 
-		// Non-printing characters (2263 codepoints) {{{
+		// Non-printing characters (2272 codepoints) {{{
 		case 0x1 ... 0x1f:
 			return -1;
 		case 0x7f ... 0x9f:
@@ -606,6 +642,8 @@ wcwidth_std(int32_t code) {
 			return -1;
 		case 0x110cd:
 			return -1;
+		case 0x13430 ... 0x13438:
+			return -1;
 		case 0x1bca0 ... 0x1bca3:
 			return -1;
 		case 0x1d173 ... 0x1d17a:
@@ -625,7 +663,7 @@ wcwidth_std(int32_t code) {
 			return -3;
 		// }}}
 
-		// Text Presentation (218 codepoints) {{{
+		// Text Presentation (219 codepoints) {{{
 		case 0x23:
 			return 1;
 		case 0x2a:
@@ -715,6 +753,8 @@ wcwidth_std(int32_t code) {
 		case 0x269b ... 0x269c:
 			return 1;
 		case 0x26a0:
+			return 1;
+		case 0x26a7:
 			return 1;
 		case 0x26b0 ... 0x26b1:
 			return 1;
@@ -1215,7 +1255,7 @@ wcwidth_std(int32_t code) {
 			return -2;
 		// }}}
 
-		// East Asian double width (181791 codepoints) {{{
+		// East Asian double width (182418 codepoints) {{{
 		case 0x1100 ... 0x115f:
 			return 2;
 		case 0x231a ... 0x231b:
@@ -1308,9 +1348,7 @@ wcwidth_std(int32_t code) {
 			return 2;
 		case 0x3131 ... 0x318e:
 			return 2;
-		case 0x3190 ... 0x31ba:
-			return 2;
-		case 0x31c0 ... 0x31e3:
+		case 0x3190 ... 0x31e3:
 			return 2;
 		case 0x31f0 ... 0x321e:
 			return 2;
@@ -1320,9 +1358,7 @@ wcwidth_std(int32_t code) {
 			return 2;
 		case 0x3298:
 			return 2;
-		case 0x329a ... 0x32fe:
-			return 2;
-		case 0x3300 ... 0x4dbf:
+		case 0x329a ... 0x4dbf:
 			return 2;
 		case 0x4e00 ... 0xa48c:
 			return 2;
@@ -1346,13 +1382,19 @@ wcwidth_std(int32_t code) {
 			return 2;
 		case 0xffe0 ... 0xffe6:
 			return 2;
-		case 0x16fe0 ... 0x16fe1:
+		case 0x16fe0 ... 0x16fe3:
 			return 2;
-		case 0x17000 ... 0x187f1:
+		case 0x17000 ... 0x187f7:
 			return 2;
-		case 0x18800 ... 0x18af2:
+		case 0x18800 ... 0x18cd5:
+			return 2;
+		case 0x18d00 ... 0x18d08:
 			return 2;
 		case 0x1b000 ... 0x1b11e:
+			return 2;
+		case 0x1b150 ... 0x1b152:
+			return 2;
+		case 0x1b164 ... 0x1b167:
 			return 2;
 		case 0x1b170 ... 0x1b2fb:
 			return 2;
@@ -1420,25 +1462,37 @@ wcwidth_std(int32_t code) {
 			return 2;
 		case 0x1f6d0 ... 0x1f6d2:
 			return 2;
+		case 0x1f6d5 ... 0x1f6d7:
+			return 2;
 		case 0x1f6eb ... 0x1f6ec:
 			return 2;
-		case 0x1f6f4 ... 0x1f6f9:
+		case 0x1f6f4 ... 0x1f6fc:
 			return 2;
-		case 0x1f910 ... 0x1f93e:
+		case 0x1f7e0 ... 0x1f7eb:
 			return 2;
-		case 0x1f940 ... 0x1f970:
+		case 0x1f90c ... 0x1f93a:
 			return 2;
-		case 0x1f973 ... 0x1f976:
+		case 0x1f93c ... 0x1f945:
 			return 2;
-		case 0x1f97a:
+		case 0x1f947 ... 0x1f978:
 			return 2;
-		case 0x1f97c ... 0x1f9a2:
+		case 0x1f97a ... 0x1f9cb:
 			return 2;
-		case 0x1f9b0 ... 0x1f9b9:
+		case 0x1f9cd ... 0x1f9ff:
 			return 2;
-		case 0x1f9c0 ... 0x1f9c2:
+		case 0x1fa70 ... 0x1fa74:
 			return 2;
-		case 0x1f9d0 ... 0x1f9ff:
+		case 0x1fa78 ... 0x1fa7a:
+			return 2;
+		case 0x1fa80 ... 0x1fa86:
+			return 2;
+		case 0x1fa90 ... 0x1faa8:
+			return 2;
+		case 0x1fab0 ... 0x1fab6:
+			return 2;
+		case 0x1fac0 ... 0x1fac2:
+			return 2;
+		case 0x1fad0 ... 0x1fad6:
 			return 2;
 		case 0x20000 ... 0x2fffd:
 			return 2;
@@ -1446,12 +1500,10 @@ wcwidth_std(int32_t code) {
 			return 2;
 		// }}}
 
-		// Emoji Presentation (26 codepoints) {{{
-		case 0x1f1e6 ... 0x1f1ff:
-			return 2;
+		// Emoji Presentation (0 codepoints) {{{
 		// }}}
 
-		// Not assigned in the unicode character database (766881 codepoints) {{{
+		// Not assigned in the unicode character database (765365 codepoints) {{{
 		case 0x378 ... 0x379:
 			return -4;
 		case 0x380 ... 0x383:
@@ -1498,7 +1550,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x8b5:
 			return -4;
-		case 0x8be ... 0x8d2:
+		case 0x8c8 ... 0x8d2:
 			return -4;
 		case 0x984:
 			return -4;
@@ -1606,7 +1658,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xb49 ... 0xb4a:
 			return -4;
-		case 0xb4e ... 0xb55:
+		case 0xb4e ... 0xb54:
 			return -4;
 		case 0xb58 ... 0xb5b:
 			return -4;
@@ -1668,7 +1720,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xc64 ... 0xc65:
 			return -4;
-		case 0xc70 ... 0xc77:
+		case 0xc70 ... 0xc76:
 			return -4;
 		case 0xc8d:
 			return -4;
@@ -1696,8 +1748,6 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xcf3 ... 0xcff:
 			return -4;
-		case 0xd04:
-			return -4;
 		case 0xd0d:
 			return -4;
 		case 0xd11:
@@ -1710,7 +1760,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xd64 ... 0xd65:
 			return -4;
-		case 0xd80 ... 0xd81:
+		case 0xd80:
 			return -4;
 		case 0xd84:
 			return -4;
@@ -1742,27 +1792,13 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xe83:
 			return -4;
-		case 0xe85 ... 0xe86:
+		case 0xe85:
 			return -4;
-		case 0xe89:
-			return -4;
-		case 0xe8b ... 0xe8c:
-			return -4;
-		case 0xe8e ... 0xe93:
-			return -4;
-		case 0xe98:
-			return -4;
-		case 0xea0:
+		case 0xe8b:
 			return -4;
 		case 0xea4:
 			return -4;
 		case 0xea6:
-			return -4;
-		case 0xea8 ... 0xea9:
-			return -4;
-		case 0xeac:
-			return -4;
-		case 0xeba:
 			return -4;
 		case 0xebe ... 0xebf:
 			return -4;
@@ -1898,7 +1934,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1aae ... 0x1aaf:
 			return -4;
-		case 0x1abf ... 0x1aff:
+		case 0x1ac1 ... 0x1aff:
 			return -4;
 		case 0x1b4c ... 0x1b4f:
 			return -4;
@@ -1916,7 +1952,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1cc8 ... 0x1ccf:
 			return -4;
-		case 0x1cfa ... 0x1cff:
+		case 0x1cfb ... 0x1cff:
 			return -4;
 		case 0x1dfa:
 			return -4;
@@ -1972,11 +2008,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x2b74 ... 0x2b75:
 			return -4;
-		case 0x2b96 ... 0x2b97:
-			return -4;
-		case 0x2bc9:
-			return -4;
-		case 0x2bff:
+		case 0x2b96:
 			return -4;
 		case 0x2c2f:
 			return -4;
@@ -2012,7 +2044,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x2ddf:
 			return -4;
-		case 0x2e4f ... 0x2e7f:
+		case 0x2e53 ... 0x2e7f:
 			return -4;
 		case 0x2e9a:
 			return -4;
@@ -2032,13 +2064,9 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x318f:
 			return -4;
-		case 0x31bb ... 0x31bf:
-			return -4;
 		case 0x31e4 ... 0x31ef:
 			return -4;
 		case 0x321f:
-			return -4;
-		case 0x32ff:
 			return -4;
 		case 0xa48d ... 0xa48f:
 			return -4;
@@ -2048,9 +2076,11 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xa6f8 ... 0xa6ff:
 			return -4;
-		case 0xa7ba ... 0xa7f6:
+		case 0xa7c0 ... 0xa7c1:
 			return -4;
-		case 0xa82c ... 0xa82f:
+		case 0xa7cb ... 0xa7f4:
+			return -4;
+		case 0xa82d ... 0xa82f:
 			return -4;
 		case 0xa83a ... 0xa83f:
 			return -4;
@@ -2090,7 +2120,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0xab2f:
 			return -4;
-		case 0xab66 ... 0xab6f:
+		case 0xab6c ... 0xab6f:
 			return -4;
 		case 0xabee ... 0xabef:
 			return -4;
@@ -2176,7 +2206,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1018f:
 			return -4;
-		case 0x1019c ... 0x1019f:
+		case 0x1019d ... 0x1019f:
 			return -4;
 		case 0x101a1 ... 0x101cf:
 			return -4;
@@ -2294,11 +2324,21 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x10d3a ... 0x10e5f:
 			return -4;
-		case 0x10e7f ... 0x10eff:
+		case 0x10e7f:
+			return -4;
+		case 0x10eaa:
+			return -4;
+		case 0x10eae ... 0x10eaf:
+			return -4;
+		case 0x10eb2 ... 0x10eff:
 			return -4;
 		case 0x10f28 ... 0x10f2f:
 			return -4;
-		case 0x10f5a ... 0x10fff:
+		case 0x10f5a ... 0x10faf:
+			return -4;
+		case 0x10fcc ... 0x10fdf:
+			return -4;
+		case 0x10ff7 ... 0x10fff:
 			return -4;
 		case 0x1104e ... 0x11051:
 			return -4;
@@ -2314,11 +2354,9 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x11135:
 			return -4;
-		case 0x11147 ... 0x1114f:
+		case 0x11148 ... 0x1114f:
 			return -4;
 		case 0x11177 ... 0x1117f:
-			return -4;
-		case 0x111ce ... 0x111cf:
 			return -4;
 		case 0x111e0:
 			return -4;
@@ -2372,11 +2410,9 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x11375 ... 0x113ff:
 			return -4;
-		case 0x1145a:
-			return -4;
 		case 0x1145c:
 			return -4;
-		case 0x1145f ... 0x1147f:
+		case 0x11462 ... 0x1147f:
 			return -4;
 		case 0x114c8 ... 0x114cf:
 			return -4;
@@ -2392,7 +2428,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1166d ... 0x1167f:
 			return -4;
-		case 0x116b8 ... 0x116bf:
+		case 0x116b9 ... 0x116bf:
 			return -4;
 		case 0x116ca ... 0x116ff:
 			return -4;
@@ -2406,11 +2442,29 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x118f3 ... 0x118fe:
 			return -4;
-		case 0x11900 ... 0x119ff:
+		case 0x11907 ... 0x11908:
+			return -4;
+		case 0x1190a ... 0x1190b:
+			return -4;
+		case 0x11914:
+			return -4;
+		case 0x11917:
+			return -4;
+		case 0x11936:
+			return -4;
+		case 0x11939 ... 0x1193a:
+			return -4;
+		case 0x11947 ... 0x1194f:
+			return -4;
+		case 0x1195a ... 0x1199f:
+			return -4;
+		case 0x119a8 ... 0x119a9:
+			return -4;
+		case 0x119d8 ... 0x119d9:
+			return -4;
+		case 0x119e5 ... 0x119ff:
 			return -4;
 		case 0x11a48 ... 0x11a4f:
-			return -4;
-		case 0x11a84 ... 0x11a85:
 			return -4;
 		case 0x11aa3 ... 0x11abf:
 			return -4;
@@ -2456,7 +2510,11 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x11daa ... 0x11edf:
 			return -4;
-		case 0x11ef9 ... 0x11fff:
+		case 0x11ef9 ... 0x11faf:
+			return -4;
+		case 0x11fb1 ... 0x11fbf:
+			return -4;
+		case 0x11ff2 ... 0x11ffe:
 			return -4;
 		case 0x1239a ... 0x123ff:
 			return -4;
@@ -2466,7 +2524,9 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x12544 ... 0x12fff:
 			return -4;
-		case 0x1342f ... 0x143ff:
+		case 0x1342f:
+			return -4;
+		case 0x13439 ... 0x143ff:
 			return -4;
 		case 0x14647 ... 0x167ff:
 			return -4;
@@ -2494,19 +2554,27 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x16e9b ... 0x16eff:
 			return -4;
-		case 0x16f45 ... 0x16f4f:
+		case 0x16f4b ... 0x16f4e:
 			return -4;
-		case 0x16f7f ... 0x16f8e:
+		case 0x16f88 ... 0x16f8e:
 			return -4;
 		case 0x16fa0 ... 0x16fdf:
 			return -4;
-		case 0x16fe2 ... 0x16fff:
+		case 0x16fe5 ... 0x16fef:
 			return -4;
-		case 0x187f2 ... 0x187ff:
+		case 0x16ff2 ... 0x16fff:
 			return -4;
-		case 0x18af3 ... 0x1afff:
+		case 0x187f8 ... 0x187ff:
 			return -4;
-		case 0x1b11f ... 0x1b16f:
+		case 0x18cd6 ... 0x18cff:
+			return -4;
+		case 0x18d09 ... 0x1afff:
+			return -4;
+		case 0x1b11f ... 0x1b14f:
+			return -4;
+		case 0x1b153 ... 0x1b163:
+			return -4;
+		case 0x1b168 ... 0x1b16f:
 			return -4;
 		case 0x1b2fc ... 0x1bbff:
 			return -4;
@@ -2588,19 +2656,33 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1e025:
 			return -4;
-		case 0x1e02b ... 0x1e7ff:
+		case 0x1e02b ... 0x1e0ff:
+			return -4;
+		case 0x1e12d ... 0x1e12f:
+			return -4;
+		case 0x1e13e ... 0x1e13f:
+			return -4;
+		case 0x1e14a ... 0x1e14d:
+			return -4;
+		case 0x1e150 ... 0x1e2bf:
+			return -4;
+		case 0x1e2fa ... 0x1e2fe:
+			return -4;
+		case 0x1e300 ... 0x1e7ff:
 			return -4;
 		case 0x1e8c5 ... 0x1e8c6:
 			return -4;
 		case 0x1e8d7 ... 0x1e8ff:
 			return -4;
-		case 0x1e94b ... 0x1e94f:
+		case 0x1e94c ... 0x1e94f:
 			return -4;
 		case 0x1e95a ... 0x1e95d:
 			return -4;
 		case 0x1e960 ... 0x1ec70:
 			return -4;
-		case 0x1ecb5 ... 0x1edff:
+		case 0x1ecb5 ... 0x1ed00:
+			return -4;
+		case 0x1ed3e ... 0x1edff:
 			return -4;
 		case 0x1ee04:
 			return -4;
@@ -2682,11 +2764,7 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1f0f6 ... 0x1f0ff:
 			return -4;
-		case 0x1f10d ... 0x1f10f:
-			return -4;
-		case 0x1f16c ... 0x1f16f:
-			return -4;
-		case 0x1f1ad ... 0x1f1e5:
+		case 0x1f1ae ... 0x1f1e5:
 			return -4;
 		case 0x1f203 ... 0x1f20f:
 			return -4;
@@ -2698,15 +2776,17 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1f266 ... 0x1f2ff:
 			return -4;
-		case 0x1f6d5 ... 0x1f6df:
+		case 0x1f6d8 ... 0x1f6df:
 			return -4;
 		case 0x1f6ed ... 0x1f6ef:
 			return -4;
-		case 0x1f6fa ... 0x1f6ff:
+		case 0x1f6fd ... 0x1f6ff:
 			return -4;
 		case 0x1f774 ... 0x1f77f:
 			return -4;
-		case 0x1f7d9 ... 0x1f7ff:
+		case 0x1f7d9 ... 0x1f7df:
+			return -4;
+		case 0x1f7ec ... 0x1f7ff:
 			return -4;
 		case 0x1f80c ... 0x1f80f:
 			return -4;
@@ -2716,27 +2796,37 @@ wcwidth_std(int32_t code) {
 			return -4;
 		case 0x1f888 ... 0x1f88f:
 			return -4;
-		case 0x1f8ae ... 0x1f8ff:
+		case 0x1f8ae ... 0x1f8af:
 			return -4;
-		case 0x1f90c ... 0x1f90f:
+		case 0x1f8b2 ... 0x1f8ff:
 			return -4;
-		case 0x1f93f:
+		case 0x1f979:
 			return -4;
-		case 0x1f971 ... 0x1f972:
+		case 0x1f9cc:
 			return -4;
-		case 0x1f977 ... 0x1f979:
+		case 0x1fa54 ... 0x1fa5f:
 			return -4;
-		case 0x1f97b:
+		case 0x1fa6e ... 0x1fa6f:
 			return -4;
-		case 0x1f9a3 ... 0x1f9af:
+		case 0x1fa75 ... 0x1fa77:
 			return -4;
-		case 0x1f9ba ... 0x1f9bf:
+		case 0x1fa7b ... 0x1fa7f:
 			return -4;
-		case 0x1f9c3 ... 0x1f9cf:
+		case 0x1fa87 ... 0x1fa8f:
 			return -4;
-		case 0x1fa00 ... 0x1fa5f:
+		case 0x1faa9 ... 0x1faaf:
 			return -4;
-		case 0x1fa6e ... 0x1ffff:
+		case 0x1fab7 ... 0x1fabf:
+			return -4;
+		case 0x1fac3 ... 0x1facf:
+			return -4;
+		case 0x1fad7 ... 0x1faff:
+			return -4;
+		case 0x1fb93:
+			return -4;
+		case 0x1fbcb ... 0x1fbef:
+			return -4;
+		case 0x1fbfa ... 0x1ffff:
 			return -4;
 		case 0x2fffe ... 0x2ffff:
 			return -4;
@@ -2758,7 +2848,7 @@ wcwidth_std(int32_t code) {
 	}
 	return 1;
 }
-static bool
+static inline bool
 is_emoji_presentation_base(uint32_t code) {
 	switch(code) {
 		case 0x23:
@@ -2789,11 +2879,7 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x23cf:
 			return true;
-		case 0x23e9 ... 0x23ea:
-			return true;
-		case 0x23ed ... 0x23ef:
-			return true;
-		case 0x23f1 ... 0x23f3:
+		case 0x23e9 ... 0x23f3:
 			return true;
 		case 0x23f8 ... 0x23fa:
 			return true;
@@ -2857,6 +2943,8 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x26a0 ... 0x26a1:
 			return true;
+		case 0x26a7:
+			return true;
 		case 0x26aa ... 0x26ab:
 			return true;
 		case 0x26b0 ... 0x26b1:
@@ -2867,7 +2955,7 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x26c8:
 			return true;
-		case 0x26cf:
+		case 0x26ce ... 0x26cf:
 			return true;
 		case 0x26d1:
 			return true;
@@ -2883,9 +2971,9 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x2702:
 			return true;
-		case 0x2708 ... 0x2709:
+		case 0x2705:
 			return true;
-		case 0x270c ... 0x270d:
+		case 0x2708 ... 0x270d:
 			return true;
 		case 0x270f:
 			return true;
@@ -2899,19 +2987,31 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x2721:
 			return true;
+		case 0x2728:
+			return true;
 		case 0x2733 ... 0x2734:
 			return true;
 		case 0x2744:
 			return true;
 		case 0x2747:
 			return true;
-		case 0x2753:
+		case 0x274c:
+			return true;
+		case 0x274e:
+			return true;
+		case 0x2753 ... 0x2755:
 			return true;
 		case 0x2757:
 			return true;
 		case 0x2763 ... 0x2764:
 			return true;
+		case 0x2795 ... 0x2797:
+			return true;
 		case 0x27a1:
+			return true;
+		case 0x27b0:
+			return true;
+		case 0x27bf:
 			return true;
 		case 0x2934 ... 0x2935:
 			return true;
@@ -2933,125 +3033,51 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x1f004:
 			return true;
+		case 0x1f0cf:
+			return true;
 		case 0x1f170 ... 0x1f171:
 			return true;
 		case 0x1f17e ... 0x1f17f:
 			return true;
-		case 0x1f202:
+		case 0x1f18e:
+			return true;
+		case 0x1f191 ... 0x1f19a:
+			return true;
+		case 0x1f1e6 ... 0x1f1ff:
+			return true;
+		case 0x1f201 ... 0x1f202:
 			return true;
 		case 0x1f21a:
 			return true;
 		case 0x1f22f:
 			return true;
-		case 0x1f237:
+		case 0x1f232 ... 0x1f23a:
 			return true;
-		case 0x1f30d ... 0x1f30f:
+		case 0x1f250 ... 0x1f251:
 			return true;
-		case 0x1f315:
+		case 0x1f300 ... 0x1f321:
 			return true;
-		case 0x1f31c:
-			return true;
-		case 0x1f321:
-			return true;
-		case 0x1f324 ... 0x1f32c:
-			return true;
-		case 0x1f336:
-			return true;
-		case 0x1f378:
-			return true;
-		case 0x1f37d:
-			return true;
-		case 0x1f393:
+		case 0x1f324 ... 0x1f393:
 			return true;
 		case 0x1f396 ... 0x1f397:
 			return true;
 		case 0x1f399 ... 0x1f39b:
 			return true;
-		case 0x1f39e ... 0x1f39f:
+		case 0x1f39e ... 0x1f3f0:
 			return true;
-		case 0x1f3a7:
+		case 0x1f3f3 ... 0x1f3f5:
 			return true;
-		case 0x1f3ac ... 0x1f3ae:
+		case 0x1f3f7 ... 0x1f4fd:
 			return true;
-		case 0x1f3c2:
+		case 0x1f4ff ... 0x1f53d:
 			return true;
-		case 0x1f3c4:
-			return true;
-		case 0x1f3c6:
-			return true;
-		case 0x1f3ca ... 0x1f3ce:
-			return true;
-		case 0x1f3d4 ... 0x1f3e0:
-			return true;
-		case 0x1f3ed:
-			return true;
-		case 0x1f3f3:
-			return true;
-		case 0x1f3f5:
-			return true;
-		case 0x1f3f7:
-			return true;
-		case 0x1f408:
-			return true;
-		case 0x1f415:
-			return true;
-		case 0x1f41f:
-			return true;
-		case 0x1f426:
-			return true;
-		case 0x1f43f:
-			return true;
-		case 0x1f441 ... 0x1f442:
-			return true;
-		case 0x1f446 ... 0x1f449:
-			return true;
-		case 0x1f44d ... 0x1f44e:
-			return true;
-		case 0x1f453:
-			return true;
-		case 0x1f46a:
-			return true;
-		case 0x1f47d:
-			return true;
-		case 0x1f4a3:
-			return true;
-		case 0x1f4b0:
-			return true;
-		case 0x1f4b3:
-			return true;
-		case 0x1f4bb:
-			return true;
-		case 0x1f4bf:
-			return true;
-		case 0x1f4cb:
-			return true;
-		case 0x1f4da:
-			return true;
-		case 0x1f4df:
-			return true;
-		case 0x1f4e4 ... 0x1f4e6:
-			return true;
-		case 0x1f4ea ... 0x1f4ed:
-			return true;
-		case 0x1f4f7:
-			return true;
-		case 0x1f4f9 ... 0x1f4fb:
-			return true;
-		case 0x1f4fd:
-			return true;
-		case 0x1f508:
-			return true;
-		case 0x1f50d:
-			return true;
-		case 0x1f512 ... 0x1f513:
-			return true;
-		case 0x1f549 ... 0x1f54a:
+		case 0x1f549 ... 0x1f54e:
 			return true;
 		case 0x1f550 ... 0x1f567:
 			return true;
 		case 0x1f56f ... 0x1f570:
 			return true;
-		case 0x1f573 ... 0x1f579:
+		case 0x1f573 ... 0x1f57a:
 			return true;
 		case 0x1f587:
 			return true;
@@ -3059,7 +3085,9 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x1f590:
 			return true;
-		case 0x1f5a5:
+		case 0x1f595 ... 0x1f596:
+			return true;
+		case 0x1f5a4 ... 0x1f5a5:
 			return true;
 		case 0x1f5a8:
 			return true;
@@ -3083,39 +3111,49 @@ is_emoji_presentation_base(uint32_t code) {
 			return true;
 		case 0x1f5f3:
 			return true;
-		case 0x1f5fa:
+		case 0x1f5fa ... 0x1f64f:
 			return true;
-		case 0x1f610:
+		case 0x1f680 ... 0x1f6c5:
 			return true;
-		case 0x1f687:
+		case 0x1f6cb ... 0x1f6d2:
 			return true;
-		case 0x1f68d:
-			return true;
-		case 0x1f691:
-			return true;
-		case 0x1f694:
-			return true;
-		case 0x1f698:
-			return true;
-		case 0x1f6ad:
-			return true;
-		case 0x1f6b2:
-			return true;
-		case 0x1f6b9 ... 0x1f6ba:
-			return true;
-		case 0x1f6bc:
-			return true;
-		case 0x1f6cb:
-			return true;
-		case 0x1f6cd ... 0x1f6cf:
+		case 0x1f6d5 ... 0x1f6d7:
 			return true;
 		case 0x1f6e0 ... 0x1f6e5:
 			return true;
 		case 0x1f6e9:
 			return true;
+		case 0x1f6eb ... 0x1f6ec:
+			return true;
 		case 0x1f6f0:
 			return true;
-		case 0x1f6f3:
+		case 0x1f6f3 ... 0x1f6fc:
+			return true;
+		case 0x1f7e0 ... 0x1f7eb:
+			return true;
+		case 0x1f90c ... 0x1f93a:
+			return true;
+		case 0x1f93c ... 0x1f945:
+			return true;
+		case 0x1f947 ... 0x1f978:
+			return true;
+		case 0x1f97a ... 0x1f9cb:
+			return true;
+		case 0x1f9cd ... 0x1f9ff:
+			return true;
+		case 0x1fa70 ... 0x1fa74:
+			return true;
+		case 0x1fa78 ... 0x1fa7a:
+			return true;
+		case 0x1fa80 ... 0x1fa86:
+			return true;
+		case 0x1fa90 ... 0x1faa8:
+			return true;
+		case 0x1fab0 ... 0x1fab6:
+			return true;
+		case 0x1fac0 ... 0x1fac2:
+			return true;
+		case 0x1fad0 ... 0x1fad6:
 			return true;
 		default: return false;
 	}

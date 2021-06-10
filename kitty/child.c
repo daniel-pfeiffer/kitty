@@ -6,12 +6,15 @@
  */
 
 #include "data-types.h"
+#include "safe-wrappers.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 static inline char**
 serialize_string_tuple(PyObject *src) {
@@ -32,8 +35,8 @@ serialize_string_tuple(PyObject *src) {
 static inline void
 free_string_tuple(char** data) {
     size_t i = 0;
-	while(data[i]) free(data[i++]);
-	free(data);
+    while(data[i]) free(data[i++]);
+    free(data);
 }
 
 extern char **environ;
@@ -76,45 +79,60 @@ spawn(PyObject *self UNUSED, PyObject *args) {
     char **argv = serialize_string_tuple(argv_p);
     char **env = serialize_string_tuple(env_p);
 
+#if PY_VERSION_HEX >= 0x03070000
+    PyOS_BeforeFork();
+#endif
     pid_t pid = fork();
     switch(pid) {
-        case 0:
+        case 0: {
             // child
+#if PY_VERSION_HEX >= 0x03070000
+            PyOS_AfterFork_Child();
+#endif
+            sigset_t signals = {0};
+            struct sigaction act = {.sa_handler=SIG_DFL};
+#define SA(which) { if (sigaction(which, &act, NULL) != 0) exit_on_err("sigaction() in child process failed"); }
+            SA(SIGINT); SA(SIGTERM); SA(SIGCHLD);
+#undef SA
+            if (sigprocmask(SIG_SETMASK, &signals, NULL) != 0) exit_on_err("sigprocmask() in child process failed");
             // Use only signal-safe functions (man 7 signal-safety)
             if (chdir(cwd) != 0) { if (chdir("/") != 0) {} };  // ignore failure to chdir to /
             if (setsid() == -1) exit_on_err("setsid() in child process failed");
 
             // Establish the controlling terminal (see man 7 credentials)
-            int tfd = open(name, O_RDWR);
+            int tfd = safe_open(name, O_RDWR, 0);
             if (tfd == -1) exit_on_err("Failed to open controlling terminal");
-#ifdef TIOCSTTY
+#ifdef TIOCSCTTY
             // On BSD open() does not establish the controlling terminal
             if (ioctl(tfd, TIOCSCTTY, 0) == -1) exit_on_err("Failed to set controlling terminal with TIOCSCTTY");
 #endif
-            close(tfd);
+            safe_close(tfd, __FILE__, __LINE__);
 
             // Redirect stdin/stdout/stderr to the pty
             if (dup2(slave, 1) == -1) exit_on_err("dup2() failed for fd number 1");
             if (dup2(slave, 2) == -1) exit_on_err("dup2() failed for fd number 2");
             if (stdin_read_fd > -1) {
                 if (dup2(stdin_read_fd, 0) == -1) exit_on_err("dup2() failed for fd number 0");
-                close(stdin_read_fd);
-                close(stdin_write_fd);
+                safe_close(stdin_read_fd, __FILE__, __LINE__);
+                safe_close(stdin_write_fd, __FILE__, __LINE__);
             } else {
                 if (dup2(slave, 0) == -1) exit_on_err("dup2() failed for fd number 0");
             }
-            close(slave);
-            close(master);
+            safe_close(slave, __FILE__, __LINE__);
+            safe_close(master, __FILE__, __LINE__);
 
             // Wait for READY_SIGNAL which indicates kitty has setup the screen object
-            close(ready_write_fd);
+            safe_close(ready_write_fd, __FILE__, __LINE__);
             wait_for_terminal_ready(ready_read_fd);
-            close(ready_read_fd);
+            safe_close(ready_read_fd, __FILE__, __LINE__);
 
             // Close any extra fds inherited from parent
-            for (int c = 3; c < 201; c++) close(c);
+            for (int c = 3; c < 201; c++) safe_close(c, __FILE__, __LINE__);
 
             environ = env;
+            // for some reason SIGPIPE is set to SIG_IGN, so reset it, needed by bash,
+            // which does not reset signal handlers on its own
+            signal(SIGPIPE, SIG_DFL);
             execvp(exe, argv);
             // Report the failure and exec a shell instead, so that we are not left
             // with a forked but not exec'ed process
@@ -126,10 +144,20 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             execlp("sh", "sh", "-c", "read w", NULL);
             exit(EXIT_FAILURE);
             break;
-        case -1:
+        }
+        case -1: {
+#if PY_VERSION_HEX >= 0x03070000
+            int saved_errno = errno;
+            PyOS_AfterFork_Parent();
+            errno = saved_errno;
+#endif
             PyErr_SetFromErrno(PyExc_OSError);
             break;
+        }
         default:
+#if PY_VERSION_HEX >= 0x03070000
+            PyOS_AfterFork_Parent();
+#endif
             break;
     }
 #undef exit_on_err

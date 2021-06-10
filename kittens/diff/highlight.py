@@ -1,19 +1,21 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import concurrent
 import os
 import re
+from typing import IO, Dict, Iterable, List, Optional, Tuple, Union, cast
 
-from pygments import highlight
-from pygments.formatter import Formatter
-from pygments.lexers import get_lexer_for_filename
-from pygments.util import ClassNotFound
+from pygments import highlight  # type: ignore
+from pygments.formatter import Formatter  # type: ignore
+from pygments.lexers import get_lexer_for_filename  # type: ignore
+from pygments.util import ClassNotFound  # type: ignore
 
+from kitty.multiprocessing import get_process_pool_executor
 from kitty.rgb import color_as_sgr, parse_sharp
 
-from .collect import Segment, data_for_path, lines_for_path
+from .collect import Collection, Segment, data_for_path, lines_for_path
 
 
 class StyleNotFound(Exception):
@@ -22,7 +24,7 @@ class StyleNotFound(Exception):
 
 class DiffFormatter(Formatter):
 
-    def __init__(self, style='default'):
+    def __init__(self, style: str = 'default') -> None:
         try:
             Formatter.__init__(self, style=style)
             initialized = True
@@ -31,30 +33,34 @@ class DiffFormatter(Formatter):
         if not initialized:
             raise StyleNotFound('pygments style "{}" not found'.format(style))
 
-        self.styles = {}
-        for token, style in self.style:
+        self.styles: Dict[str, Tuple[str, str]] = {}
+        for token, token_style in self.style:
             start = []
             end = []
+            fstart = fend = ''
             # a style item is a tuple in the following form:
             # colors are readily specified in hex: 'RRGGBB'
-            if style['color']:
-                start.append('38' + color_as_sgr(parse_sharp(style['color'])))
-                end.append('39')
-            if style['bold']:
+            col = token_style['color']
+            if col:
+                pc = parse_sharp(col)
+                if pc is not None:
+                    start.append('38' + color_as_sgr(pc))
+                    end.append('39')
+            if token_style['bold']:
                 start.append('1')
                 end.append('22')
-            if style['italic']:
+            if token_style['italic']:
                 start.append('3')
                 end.append('23')
-            if style['underline']:
+            if token_style['underline']:
                 start.append('4')
                 end.append('24')
             if start:
-                start = '\033[{}m'.format(';'.join(start))
-                end = '\033[{}m'.format(';'.join(end))
-            self.styles[token] = start or '', end or ''
+                fstart = '\033[{}m'.format(';'.join(start))
+                fend = '\033[{}m'.format(';'.join(end))
+            self.styles[token] = fstart, fend
 
-    def format(self, tokensource, outfile):
+    def format(self, tokensource: Iterable[Tuple[str, str]], outfile: IO[str]) -> None:
         for ttype, value in tokensource:
             not_found = True
             if value.rstrip('\n'):
@@ -76,15 +82,15 @@ class DiffFormatter(Formatter):
                 outfile.write(value)
 
 
-formatter = None
+formatter: Optional[DiffFormatter] = None
 
 
-def initialize_highlighter(style='default'):
+def initialize_highlighter(style: str = 'default') -> None:
     global formatter
     formatter = DiffFormatter(style)
 
 
-def highlight_data(code, filename, aliases=None):
+def highlight_data(code: str, filename: str, aliases: Optional[Dict[str, str]] = None) -> Optional[str]:
     if aliases:
         base, ext = os.path.splitext(filename)
         alias = aliases.get(ext[1:])
@@ -93,17 +99,16 @@ def highlight_data(code, filename, aliases=None):
     try:
         lexer = get_lexer_for_filename(filename, stripnl=False)
     except ClassNotFound:
-        pass
-    else:
-        return highlight(code, lexer, formatter)
+        return None
+    return cast(str, highlight(code, lexer, formatter))
 
 
 split_pat = re.compile(r'(\033\[.*?m)')
 
 
-def highlight_line(line):
-    ans = []
-    current = None
+def highlight_line(line: str) -> List[Segment]:
+    ans: List[Segment] = []
+    current: Optional[Segment] = None
     pos = 0
     for x in split_pat.split(line):
         if x.startswith('\033'):
@@ -119,8 +124,11 @@ def highlight_line(line):
     return ans
 
 
-def highlight_for_diff(path, aliases):
-    ans = []
+DiffHighlight = List[List[Segment]]
+
+
+def highlight_for_diff(path: str, aliases: Dict[str, str]) -> DiffHighlight:
+    ans: DiffHighlight = []
     lines = lines_for_path(path)
     hd = highlight_data('\n'.join(lines), path, aliases)
     if hd is not None:
@@ -129,11 +137,10 @@ def highlight_for_diff(path, aliases):
     return ans
 
 
-def highlight_collection(collection, aliases=None):
+def highlight_collection(collection: Collection, aliases: Optional[Dict[str, str]] = None) -> Union[str, Dict[str, DiffHighlight]]:
     jobs = {}
-    ans = {}
-    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        highlight_collection.processes = executor._processes
+    ans: Dict[str, DiffHighlight] = {}
+    with get_process_pool_executor(prefer_fork=True) as executor:
         for path, item_type, other_path in collection:
             if item_type != 'rename':
                 for p in (path, other_path):
@@ -151,9 +158,9 @@ def highlight_collection(collection, aliases=None):
     return ans
 
 
-def main():
-    from .config import defaults
+def main() -> None:
     # kitty +runpy "from kittens.diff.highlight import main; main()" file
+    from .options.types import defaults
     import sys
     initialize_highlighter()
     with open(sys.argv[-1]) as f:

@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <poll.h>
 #include <pthread.h>
+#include "glfw-wrapper.h"
+#include "banned.h"
 // Required minimum OpenGL version
 #define OPENGL_REQUIRED_VERSION_MAJOR 3
 #define OPENGL_REQUIRED_VERSION_MINOR 3
@@ -22,33 +24,49 @@
 #define EXPORTED __attribute__ ((visibility ("default")))
 #define LIKELY(x)    __builtin_expect (!!(x), 1)
 #define UNLIKELY(x)  __builtin_expect (!!(x), 0)
-#define MAX(x, y) (((x) > (y)) ? (x) : (y))
-#define MIN(x, y) (((x) > (y)) ? (y) : (x))
+#define MAX(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a > b ? a : b;})
+#define MIN(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a < b ? a : b;})
 #define xstr(s) str(s)
 #define str(s) #s
 #define arraysz(x) (sizeof(x)/sizeof(x[0]))
+#define zero_at_i(array, idx) memset((array) + (idx), 0, sizeof((array)[0]))
+#define zero_at_ptr(p) memset((p), 0, sizeof((p)[0]))
+#define zero_at_ptr_count(p, count) memset((p), 0, (count) * sizeof((p)[0]))
 void log_error(const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
 #define fatal(...) { log_error(__VA_ARGS__); exit(EXIT_FAILURE); }
+static inline void cleanup_free(void *p) { free(*(void**)p); }
+#define FREE_AFTER_FUNCTION __attribute__((cleanup(cleanup_free)))
 
 typedef unsigned long long id_type;
 typedef uint32_t char_type;
 typedef uint32_t color_type;
+typedef uint16_t hyperlink_id_type;
+typedef int key_type;
+#define HYPERLINK_MAX_NUMBER UINT16_MAX
 typedef uint16_t combining_type;
+typedef uint16_t glyph_index;
 typedef uint32_t pixel;
 typedef unsigned int index_type;
 typedef uint16_t sprite_index;
 typedef uint16_t attrs_type;
 typedef uint8_t line_attrs_type;
 typedef enum CursorShapes { NO_CURSOR_SHAPE, CURSOR_BLOCK, CURSOR_BEAM, CURSOR_UNDERLINE, NUM_OF_CURSOR_SHAPES } CursorShape;
+typedef enum { DISABLE_LIGATURES_NEVER, DISABLE_LIGATURES_CURSOR, DISABLE_LIGATURES_ALWAYS } DisableLigature;
 
 #define ERROR_PREFIX "[PARSE ERROR]"
 typedef enum MouseTrackingModes { NO_TRACKING, BUTTON_MODE, MOTION_MODE, ANY_MODE } MouseTrackingMode;
 typedef enum MouseTrackingProtocols { NORMAL_PROTOCOL, UTF8_PROTOCOL, SGR_PROTOCOL, URXVT_PROTOCOL} MouseTrackingProtocol;
 typedef enum MouseShapes { BEAM, HAND, ARROW } MouseShape;
+typedef enum { NONE, MENUBAR, WINDOW, ALL } WindowTitleIn;
+typedef enum { TILING, SCALED, MIRRORED } BackgroundImageLayout;
 
 #define MAX_CHILDREN 512
 #define BLANK_CHAR 0
-#define ATTRS_MASK_WITHOUT_WIDTH 0xFFC
+#define ATTRS_MASK_WITHOUT_WIDTH 0xFFFC
 #define WIDTH_MASK  3
 #define DECORATION_SHIFT  2
 #define DECORATION_MASK 3
@@ -58,9 +76,11 @@ typedef enum MouseShapes { BEAM, HAND, ARROW } MouseShape;
 #define REVERSE_SHIFT 6
 #define STRIKE_SHIFT 7
 #define DIM_SHIFT 8
+#define MARK_SHIFT 9
+#define ATTRS_MASK_WITHOUT_MARK 0xf9ff
+#define ATTRS_MASK_FOR_SGR (ATTRS_MASK_WITHOUT_MARK | ATTRS_MASK_WITHOUT_WIDTH)
+#define MARK_MASK 3
 #define COL_MASK 0xFFFFFFFF
-#define UTF8_ACCEPT 0
-#define UTF8_REJECT 1
 #define DECORATION_FG_CODE 58
 #define CHAR_IS_BLANK(ch) ((ch) == 32 || (ch) == 0)
 #define CONTINUED_MASK 1
@@ -131,6 +151,9 @@ typedef enum MouseShapes { BEAM, HAND, ARROW } MouseShape;
 #define END_ALLOW_UNUSED_RESULT _Pragma("GCC diagnostic pop")
 #endif
 
+
+typedef enum UTF8State { UTF8_ACCEPT = 0, UTF8_REJECT = 1} UTF8State;
+
 typedef struct {
     uint32_t left, top, right, bottom;
 } Region;
@@ -144,6 +167,7 @@ typedef struct {
 typedef struct {
     char_type ch;
     combining_type cc_idx[2];
+    hyperlink_id_type hyperlink_id;
 } CPUCell;
 
 
@@ -174,12 +198,18 @@ typedef struct {
 } HistoryBufSegment;
 
 typedef struct {
-    index_type bufsize, maxsz;
-    Py_UCS4 *buffer;
-    index_type start, end;
-    index_type bufend;
+    void *ringbuf;
+    size_t maximum_size;
     bool rewrap_needed;
 } PagerHistoryBuf;
+
+typedef struct {int x;} *HYPERLINK_POOL_HANDLE;
+typedef struct {
+    Py_UCS4 *buf;
+    size_t len, capacity;
+    HYPERLINK_POOL_HANDLE hyperlink_pool;
+    hyperlink_id_type active_hyperlink_id;
+} ANSIBuf;
 
 typedef struct {
     PyObject_HEAD
@@ -199,7 +229,6 @@ typedef struct {
     uint8_t decoration;
     CursorShape shape;
     color_type fg, bg, decoration_fg;
-
 } Cursor;
 
 typedef struct {
@@ -210,8 +239,14 @@ typedef struct {
 } CursorRenderInfo;
 
 typedef struct {
-    color_type default_fg, default_bg, cursor_color, highlight_fg, highlight_bg;
+    color_type default_fg, default_bg, cursor_color, cursor_text_color, cursor_text_uses_bg, highlight_fg, highlight_bg;
 } DynamicColor;
+
+
+typedef struct {
+    DynamicColor dynamic_colors;
+    uint32_t color_table[256];
+} ColorStackEntry;
 
 typedef struct {
     PyObject_HEAD
@@ -219,9 +254,10 @@ typedef struct {
     bool dirty;
     uint32_t color_table[256];
     uint32_t orig_color_table[256];
-    DynamicColor dynamic_color_stack[10];
-    size_t dynamic_color_stack_idx;
+    ColorStackEntry *color_stack;
+    unsigned int color_stack_idx, color_stack_sz;
     DynamicColor configured, overridden;
+    color_type mark_foregrounds[MARK_MASK+1], mark_backgrounds[MARK_MASK+1];
 } ColorProfile;
 
 typedef struct {
@@ -237,67 +273,64 @@ typedef struct {FONTS_DATA_HEAD} *FONTS_DATA_HANDLE;
 
 #define clear_sprite_position(cell) (cell).sprite_x = 0; (cell).sprite_y = 0; (cell).sprite_z = 0;
 
-#define left_shift_line(line, at, num) { \
-    for(index_type __i__ = (at); __i__ < (line)->xnum - (num); __i__++) { \
-        COPY_CELL(line, __i__ + (num), line, __i__) \
-    } \
-    if ((((line)->gpu_cells[(at)].attrs) & WIDTH_MASK) != 1) { \
-        (line)->cpu_cells[(at)].ch = BLANK_CHAR; \
-        (line)->gpu_cells[(at)].attrs = BLANK_CHAR ? 1 : 0; \
-        clear_sprite_position((line)->gpu_cells[(at)]); \
-    }\
-}
-
 #define ensure_space_for(base, array, type, num, capacity, initial_cap, zero_mem) \
     if ((base)->capacity < num) { \
-        size_t _newcap = MAX(initial_cap, MAX(2 * (base)->capacity, num)); \
+        size_t _newcap = MAX((size_t)initial_cap, MAX(2 * (base)->capacity, (size_t)num)); \
         (base)->array = realloc((base)->array, sizeof(type) * _newcap); \
         if ((base)->array == NULL) fatal("Out of memory while ensuring space for %zu elements in array of %s", (size_t)num, #type); \
         if (zero_mem) memset((base)->array + (base)->capacity, 0, sizeof(type) * (_newcap - (base)->capacity)); \
         (base)->capacity = _newcap; \
     }
 
+#define remove_i_from_array(array, i, count) { \
+    (count)--; \
+    if ((i) < (count)) { \
+        memmove((array) + (i), (array) + (i) + 1, sizeof((array)[0]) * ((count) - (i))); \
+    }}
 
 // Global functions
 const char* base64_decode(const uint32_t *src, size_t src_sz, uint8_t *dest, size_t dest_capacity, size_t *dest_sz);
-Line* alloc_line();
-Cursor* alloc_cursor();
+Line* alloc_line(void);
+Cursor* alloc_cursor(void);
 LineBuf* alloc_linebuf(unsigned int, unsigned int);
 HistoryBuf* alloc_historybuf(unsigned int, unsigned int, unsigned int);
-ColorProfile* alloc_color_profile();
-PyObject* create_256_color_table();
+ColorProfile* alloc_color_profile(void);
+void copy_color_profile(ColorProfile*, ColorProfile*);
+PyObject* create_256_color_table(void);
 PyObject* parse_bytes_dump(PyObject UNUSED *, PyObject *);
 PyObject* parse_bytes(PyObject UNUSED *, PyObject *);
-uint32_t decode_utf8(uint32_t*, uint32_t*, uint8_t byte);
-unsigned int encode_utf8(uint32_t ch, char* dest);
 void cursor_reset(Cursor*);
 Cursor* cursor_copy(Cursor*);
 void cursor_copy_to(Cursor *src, Cursor *dest);
 void cursor_reset_display_attrs(Cursor*);
-void cursor_from_sgr(Cursor *self, unsigned int *params, unsigned int count);
-void apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, unsigned int *params, unsigned int count);
-const char* cell_as_sgr(GPUCell *, GPUCell *);
+void cursor_from_sgr(Cursor *self, int *params, unsigned int count);
+void apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, unsigned int count);
+const char* cell_as_sgr(const GPUCell *, const GPUCell *);
 const char* cursor_as_sgr(const Cursor *);
 
-double monotonic();
 PyObject* cm_thread_write(PyObject *self, PyObject *args);
 bool schedule_write_to_child(unsigned long id, unsigned int num, ...);
 bool set_iutf8(int, bool);
 
 color_type colorprofile_to_color(ColorProfile *self, color_type entry, color_type defval);
+float cursor_text_as_bg(ColorProfile *self);
 void copy_color_table_to_buffer(ColorProfile *self, color_type *address, int offset, size_t stride);
-void colorprofile_push_dynamic_colors(ColorProfile*);
-void colorprofile_pop_dynamic_colors(ColorProfile*);
+bool colorprofile_push_colors(ColorProfile*, unsigned int);
+bool colorprofile_pop_colors(ColorProfile*, unsigned int);
+void colorprofile_report_stack(ColorProfile*, unsigned int*, unsigned int*);
 
 void set_mouse_cursor(MouseShape);
-void enter_event();
+void enter_event(void);
 void mouse_event(int, int, int);
-void focus_in_event();
-void wakeup_io_loop(bool);
-void scroll_event(double, double, int);
-void fake_scroll(int, bool);
-void set_special_key_combo(int glfw_key, int mods, bool is_native);
-void on_key_input(int key, int scancode, int action, int mods, const char*, int);
+void focus_in_event(void);
+void scroll_event(double, double, int, int);
+void on_key_input(GLFWkeyevent *ev);
 void request_window_attention(id_type, bool);
+#ifndef __APPLE__
+void play_canberra_sound(const char *which_sound, const char *event_id);
+#endif
 SPRITE_MAP_HANDLE alloc_sprite_map(unsigned int, unsigned int);
 SPRITE_MAP_HANDLE free_sprite_map(SPRITE_MAP_HANDLE);
+const char* get_hyperlink_for_id(const HYPERLINK_POOL_HANDLE, hyperlink_id_type id, bool only_url);
+
+void log_event(const char *format, ...) __attribute__((format(printf, 1, 2)));

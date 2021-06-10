@@ -29,8 +29,8 @@ static inline int memfd_create(const char *name, unsigned int flags) {
 #endif
 
 #ifndef MFD_CLOEXEC
-#define MFD_CLOEXEC		0x0001U
-#define MFD_ALLOW_SEALING	0x0002U
+#define MFD_CLOEXEC     0x0001U
+#define MFD_ALLOW_SEALING 0x0002U
 #endif
 
 #else
@@ -39,8 +39,7 @@ static inline int memfd_create(const char *name, unsigned int flags) {
 #include <unistd.h>
 #include <fcntl.h>
 
-static inline int
-createTmpfileCloexec(char* tmpname)
+static inline int createTmpfileCloexec(char* tmpname)
 {
     int fd;
 

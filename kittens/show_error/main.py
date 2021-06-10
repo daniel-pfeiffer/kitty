@@ -1,11 +1,14 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
 import sys
+from contextlib import suppress
+from typing import List
 
 from kitty.cli import parse_args
+from kitty.cli_stub import ErrorCLIOptions
 
 from ..tui.operations import styled
 
@@ -16,23 +19,22 @@ The title for the error message.
 '''.format
 
 
-def real_main(args):
+def real_main(args: List[str]) -> None:
+    msg = 'Show an error message'
+    cli_opts, items = parse_args(args[1:], OPTIONS, '', msg, 'hints', result_class=ErrorCLIOptions)
     error_message = sys.stdin.buffer.read().decode('utf-8')
     sys.stdin = open(os.ctermid())
-    msg = 'Show an error message'
-    args, items = parse_args(args, OPTIONS, '', msg, 'hints')
-    print(styled(args.title, fg_intense=True, fg='red', bold=True))
+    print(styled(cli_opts.title, fg_intense=True, fg='red', bold=True))
     print()
     print(error_message)
     print()
     input('Press Enter to close.')
 
 
-def main(args):
+def main(args: List[str]) -> None:
     try:
-        real_main(args)
-    except KeyboardInterrupt:
-        pass
+        with suppress(KeyboardInterrupt):
+            real_main(args)
     except Exception:
         import traceback
         traceback.print_exc()

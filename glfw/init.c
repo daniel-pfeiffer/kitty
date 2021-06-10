@@ -1,8 +1,8 @@
 //========================================================================
-// GLFW 3.3 - www.glfw.org
+// GLFW 3.4 - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2018 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -24,6 +24,8 @@
 //    distribution.
 //
 //========================================================================
+// Please use C89 style variable declarations in this file because VS 2010
+//========================================================================
 
 #include "internal.h"
 #include "mappings.h"
@@ -41,21 +43,21 @@
 
 // Global state shared between compilation units of GLFW
 //
-_GLFWlibrary _glfw = { GLFW_FALSE };
+_GLFWlibrary _glfw = { false };
 
 // These are outside of _glfw so they can be used before initialization and
 // after termination
 //
 static _GLFWerror _glfwMainThreadError;
 static GLFWerrorfun _glfwErrorCallback;
-static _GLFWinitconfig _glfwInitHints =
-{
-    GLFW_TRUE,      // hat buttons
-    GLFW_FALSE,     // debug keyboard
-    GLFW_TRUE,      // enable joystick
-    {
-        GLFW_TRUE,  // macOS menu bar
-        GLFW_TRUE   // macOS bundle chdir
+static _GLFWinitconfig _glfwInitHints = {
+    .hatButtons = true,
+    .angleType = GLFW_ANGLE_PLATFORM_TYPE_NONE,
+    .debugKeyboard = false,
+    .debugRendering = false,
+    .ns = {
+        .menubar = true,  // macOS menu bar
+        .chdir = true   // macOS bundle chdir
     }
 };
 
@@ -90,9 +92,10 @@ static void terminate(void)
     _glfw.mappingCount = 0;
 
     _glfwTerminateVulkan();
+    _glfwPlatformTerminateJoysticks();
     _glfwPlatformTerminate();
 
-    _glfw.initialized = GLFW_FALSE;
+    _glfw.initialized = false;
 
     while (_glfw.errorListHead)
     {
@@ -166,6 +169,10 @@ void _glfwInputError(int code, const char* format, ...)
             strcpy(description, "The requested format is unavailable");
         else if (code == GLFW_NO_WINDOW_CONTEXT)
             strcpy(description, "The specified window has no context");
+        else if (code == GLFW_FEATURE_UNAVAILABLE)
+            strcpy(description, "The requested feature cannot be implemented for this platform");
+        else if (code == GLFW_FEATURE_UNIMPLEMENTED)
+            strcpy(description, "The requested feature has not yet been implemented for this platform");
         else
             strcpy(description, "ERROR: UNKNOWN GLFW ERROR");
     }
@@ -193,15 +200,30 @@ void _glfwInputError(int code, const char* format, ...)
         _glfwErrorCallback(code, description);
 }
 
+void
+_glfwDebug(const char *format, ...) {
+    if (format)
+    {
+        va_list vl;
+
+        fprintf(stderr, "[%.4f] ", monotonic_t_to_s_double(glfwGetTime()));
+        va_start(vl, format);
+        vfprintf(stderr, format, vl);
+        va_end(vl);
+        fprintf(stderr, "\n");
+    }
+
+}
 
 //////////////////////////////////////////////////////////////////////////
 //////                        GLFW public API                       //////
 //////////////////////////////////////////////////////////////////////////
 
-GLFWAPI int glfwInit(void)
+GLFWAPI int glfwInit(monotonic_t start_time)
 {
     if (_glfw.initialized)
-        return GLFW_TRUE;
+        return true;
+    monotonic_start_time = start_time;
 
     memset(&_glfw, 0, sizeof(_glfw));
     _glfw.hints.init = _glfwInitHints;
@@ -209,7 +231,7 @@ GLFWAPI int glfwInit(void)
     if (!_glfwPlatformInit())
     {
         terminate();
-        return GLFW_FALSE;
+        return false;
     }
 
     if (!_glfwPlatformCreateMutex(&_glfw.errorLock) ||
@@ -217,13 +239,12 @@ GLFWAPI int glfwInit(void)
         !_glfwPlatformCreateTls(&_glfw.contextSlot))
     {
         terminate();
-        return GLFW_FALSE;
+        return false;
     }
 
     _glfwPlatformSetTls(&_glfw.errorSlot, &_glfwMainThreadError);
 
-    _glfw.initialized = GLFW_TRUE;
-    _glfw.timer.offset = _glfwPlatformGetTimerValue();
+    _glfw.initialized = true;
 
     glfwDefaultWindowHints();
 
@@ -235,12 +256,12 @@ GLFWAPI int glfwInit(void)
             if (!glfwUpdateGamepadMappings(_glfwDefaultMappings[i]))
             {
                 terminate();
-                return GLFW_FALSE;
+                return false;
             }
         }
     }
 
-    return GLFW_TRUE;
+    return true;
 }
 
 GLFWAPI void glfwTerminate(void)
@@ -255,14 +276,17 @@ GLFWAPI void glfwInitHint(int hint, int value)
 {
     switch (hint)
     {
-        case GLFW_ENABLE_JOYSTICKS:
-            _glfwInitHints.enableJoysticks = value;
-            return;
         case GLFW_JOYSTICK_HAT_BUTTONS:
             _glfwInitHints.hatButtons = value;
             return;
+        case GLFW_ANGLE_PLATFORM_TYPE:
+            _glfwInitHints.angleType = value;
+            return;
         case GLFW_DEBUG_KEYBOARD:
             _glfwInitHints.debugKeyboard = value;
+            return;
+        case GLFW_DEBUG_RENDERING:
+            _glfwInitHints.debugRendering = value;
             return;
         case GLFW_COCOA_CHDIR_RESOURCES:
             _glfwInitHints.ns.chdir = value;
@@ -318,5 +342,46 @@ GLFWAPI int glfwGetError(const char** description)
 GLFWAPI GLFWerrorfun glfwSetErrorCallback(GLFWerrorfun cbfun)
 {
     _GLFW_SWAP_POINTERS(_glfwErrorCallback, cbfun);
+    return cbfun;
+}
+
+
+GLFWAPI void glfwRunMainLoop(GLFWtickcallback callback, void *data)
+{
+    _GLFW_REQUIRE_INIT();
+    _glfwPlatformRunMainLoop(callback, data);
+}
+
+GLFWAPI void glfwStopMainLoop(void) {
+    _GLFW_REQUIRE_INIT();
+    _glfwPlatformStopMainLoop();
+}
+
+GLFWAPI unsigned long long glfwAddTimer(
+        monotonic_t interval, bool repeats, GLFWuserdatafun callback,
+        void *callback_data, GLFWuserdatafun free_callback)
+{
+    return _glfwPlatformAddTimer(interval, repeats, callback, callback_data, free_callback);
+}
+
+GLFWAPI void glfwUpdateTimer(unsigned long long timer_id, monotonic_t interval, bool enabled) {
+    _glfwPlatformUpdateTimer(timer_id, interval, enabled);
+}
+
+GLFWAPI void glfwRemoveTimer(unsigned long long timer_id) {
+    _glfwPlatformRemoveTimer(timer_id);
+}
+
+GLFWAPI GLFWapplicationclosefun glfwSetApplicationCloseCallback(GLFWapplicationclosefun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.application_close, cbfun);
+    return cbfun;
+}
+
+GLFWAPI GLFWdrawtextfun glfwSetDrawTextFunction(GLFWdrawtextfun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.draw_text, cbfun);
     return cbfun;
 }

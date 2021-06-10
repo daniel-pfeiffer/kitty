@@ -1,14 +1,17 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
+
+import os
+import tempfile
 
 from kitty.config import build_ansi_color_table, defaults
 from kitty.fast_data_types import (
     REVERSE, ColorProfile, Cursor as C, HistoryBuf, LineBuf,
-    parse_input_from_terminal, wcswidth, wcwidth, truncate_point_for_length
+    parse_input_from_terminal, truncate_point_for_length, wcswidth, wcwidth
 )
 from kitty.rgb import to_color
-from kitty.utils import sanitize_title
+from kitty.utils import is_path_in_temp_dir, sanitize_title
 
 from . import BaseTest, filled_cursor, filled_history_buf, filled_line_buf
 
@@ -229,19 +232,27 @@ class TestDataTypes(BaseTest):
         self.assertEqualAttributes(l3.cursor_from(0), q)
 
     def test_url_at(self):
+        self.set_options()
+
         def create(t):
             lb = create.lb = LineBuf(1, len(t))
             lf = lb.line(0)
             lf.set_text(t, 0, len(t), C())
             return lf
 
-        for trail in '.,]>)\\':
+        l0 = create('file:///etc/test')
+        self.ae(l0.url_start_at(0), 0)
+
+        for trail in '.,\\':
             lx = create("http://xyz.com" + trail)
             self.ae(lx.url_end_at(0), len(lx) - 2)
+        for trail in ')}]>':
+            lx = create("http://xyz.com" + trail)
+            self.ae(lx.url_end_at(0), len(lx) - 1)
         l0 = create("ftp://abc/")
         self.ae(l0.url_end_at(0), len(l0) - 1)
         l2 = create("http://-abcd] ")
-        self.ae(l2.url_end_at(0), len(l2) - 3)
+        self.ae(l2.url_end_at(0), len(l2) - 2)
         l3 = create("http://ab.de           ")
         self.ae(l3.url_start_at(4), 0)
         self.ae(l3.url_start_at(5), 0)
@@ -254,7 +265,7 @@ class TestDataTypes(BaseTest):
                 self.ae(lf.url_start_at(i), n)
         for i in range(7):
             for scheme in 'http https ftp file'.split():
-                lspace_test(i)
+                lspace_test(i, scheme)
         l3 = create('b https://testing.me a')
         for s in (0, 1, len(l3) - 1, len(l3) - 2):
             self.ae(l3.url_start_at(s), len(l3), 'failed with start at: %d' % s)
@@ -272,6 +283,14 @@ class TestDataTypes(BaseTest):
 
         l4 = create(' xxxxxtekljhgdkjgd')
         self.ae(l4.url_end_at(0), 0)
+
+        for trail in '/-&':
+            l4 = create('http://a.b?q=1' + trail)
+            self.ae(l4.url_end_at(1), len(l4) - 1)
+
+        l4 = create('http://a.b.')
+        self.ae(l4.url_end_at(0), len(l4) - 2)
+        self.ae(l4.url_end_at(0, 0, True), len(l4) - 1)
 
     def rewrap(self, lb, lb2):
         hb = HistoryBuf(lb2.ynum, lb2.xnum)
@@ -338,9 +357,18 @@ class TestDataTypes(BaseTest):
     def test_utils(self):
         def w(x):
             return wcwidth(ord(x))
+        self.ae(wcswidth('a\033[2mb'), 2)
+        self.ae(wcswidth('\033a\033[2mb'), 2)
+        self.ae(wcswidth('a\033]8;id=moo;https://foo\033\\a'), 2)
+        self.ae(wcswidth('a\033x'), 2)
         self.ae(tuple(map(w, 'a1\0コニチ ✔')), (1, 1, 0, 2, 2, 2, 1, 1))
         self.ae(wcswidth('\u2716\u2716\ufe0f\U0001f337'), 5)
-        self.ae(wcswidth('\033a\033[2mb'), 2)
+        self.ae(wcswidth('\u25b6\ufe0f'), 2)
+        self.ae(wcswidth('\U0001f610\ufe0e'), 1)
+        self.ae(wcswidth('\U0001f1e6a'), 3)
+        self.ae(wcswidth('\U0001F1E6a\U0001F1E8a'), 6)
+        self.ae(wcswidth('\U0001F1E6\U0001F1E8a'), 3)
+        self.ae(wcswidth('\U0001F1E6\U0001F1E8\U0001F1E6'), 4)
         # Regional indicator symbols (unicode flags) are defined as having
         # Emoji_Presentation so must have width 2
         self.ae(tuple(map(w, '\U0001f1ee\U0001f1f3')), (2, 2))
@@ -383,6 +411,12 @@ class TestDataTypes(BaseTest):
         tp('a\033[', 'mb', text='a b', csi='m')
         tp('a\033', '_', 'x\033', '\\b', text='a b', apc='x')
         tp('a\033_', 'x', '\033', '\\', 'b', text='a b', apc='x')
+
+        for prefix in ('/tmp', tempfile.gettempdir()):
+            for path in ('a.png', 'x/b.jpg', 'y/../c.jpg'):
+                self.assertTrue(is_path_in_temp_dir(os.path.join(prefix, path)))
+        for path in ('/home/xy/d.png', '/tmp/../home/x.jpg'):
+            self.assertFalse(is_path_in_temp_dir(os.path.join(path)))
 
     def test_color_profile(self):
         c = ColorProfile()

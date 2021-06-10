@@ -5,56 +5,112 @@
  */
 
 #include "state.h"
+#include "cleanup.h"
 #include "fonts.h"
+#include "monotonic.h"
+#include "charsets.h"
 #include <structmember.h>
 #include "glfw-wrapper.h"
+#ifndef __APPLE__
+#include "freetype_render_ui_text.h"
+#endif
 extern bool cocoa_make_window_resizable(void *w, bool);
 extern void cocoa_focus_window(void *w);
-extern bool cocoa_toggle_fullscreen(void *w, bool);
+extern long cocoa_window_number(void *w);
 extern void cocoa_create_global_menu(void);
-extern void cocoa_set_hide_from_tasks(void);
+extern void cocoa_hide_window_title(void *w);
+extern void cocoa_system_beep(void);
+extern void cocoa_set_activation_policy(bool);
 extern void cocoa_set_titlebar_color(void *w, color_type color);
+extern bool cocoa_alt_option_key_pressed(unsigned long);
+extern size_t cocoa_get_workspace_ids(void *w, size_t *workspace_ids, size_t array_sz);
+extern monotonic_t cocoa_cursor_blink_interval(void);
 
-
-#if GLFW_KEY_LAST >= MAX_KEY_COUNT
-#error "glfw has too many keys, you should increase MAX_KEY_COUNT"
-#endif
 
 static GLFWcursor *standard_cursor = NULL, *click_cursor = NULL, *arrow_cursor = NULL;
-static bool event_loop_blocking_with_no_timeout = false;
 
 static void set_os_window_dpi(OSWindow *w);
+
+
+void
+get_platform_dependent_config_values(void *glfw_window) {
+    if (OPT(click_interval) < 0) OPT(click_interval) = glfwGetDoubleClickInterval(glfw_window);
+    if (OPT(cursor_blink_interval) < 0) {
+        OPT(cursor_blink_interval) = ms_to_monotonic_t(500ll);
+#ifdef __APPLE__
+        monotonic_t cbi = cocoa_cursor_blink_interval();
+        if (cbi >= 0) OPT(cursor_blink_interval) = cbi / 2;
+#endif
+    }
+}
+
+void
+request_tick_callback(void) {
+    glfwPostEmptyEvent();
+}
+
+static inline void
+min_size_for_os_window(OSWindow *window, int *min_width, int *min_height) {
+    *min_width = MAX(8u, window->fonts_data->cell_width + 1);
+    *min_height = MAX(8u, window->fonts_data->cell_height + 1);
+}
+
 
 void
 update_os_window_viewport(OSWindow *window, bool notify_boss) {
     int w, h, fw, fh;
     glfwGetFramebufferSize(window->handle, &fw, &fh);
     glfwGetWindowSize(window->handle, &w, &h);
-    if (fw == window->viewport_width && fh == window->viewport_height && w == window->window_width && h == window->window_height) {
-        return; // no change, ignore
-    }
-    window->viewport_width = fw; window->viewport_height = fh;
-    double xr = window->viewport_x_ratio, yr = window->viewport_y_ratio;
-    window->viewport_x_ratio = (double)window->viewport_width / (double)w;
-    window->viewport_y_ratio = (double)window->viewport_height / (double)h;
     double xdpi = window->logical_dpi_x, ydpi = window->logical_dpi_y;
     set_os_window_dpi(window);
+
+    if (fw == window->viewport_width && fh == window->viewport_height && w == window->window_width && h == window->window_height && xdpi == window->logical_dpi_x && ydpi == window->logical_dpi_y) {
+        return; // no change, ignore
+    }
+    int min_width, min_height; min_size_for_os_window(window, &min_width, &min_height);
+    if (w <= 0 || h <= 0 || fw < min_width || fh < min_height || fw < w || fh < h) {
+        log_error("Invalid geometry ignored: framebuffer: %dx%d window: %dx%d\n", fw, fh, w, h);
+        if (!window->viewport_updated_at_least_once) {
+            window->viewport_width = min_width; window->viewport_height = min_height;
+            window->window_width = min_width; window->window_height = min_height;
+            window->viewport_x_ratio = 1; window->viewport_y_ratio = 1;
+            window->viewport_size_dirty = true;
+            if (notify_boss) {
+                call_boss(on_window_resize, "KiiO", window->id, window->viewport_width, window->viewport_height, Py_False);
+            }
+        }
+        return;
+    }
+    window->viewport_updated_at_least_once = true;
+    window->viewport_width = fw; window->viewport_height = fh;
+    double xr = window->viewport_x_ratio, yr = window->viewport_y_ratio;
+    window->viewport_x_ratio = w > 0 ? (double)window->viewport_width / (double)w : xr;
+    window->viewport_y_ratio = h > 0 ? (double)window->viewport_height / (double)h : yr;
     bool dpi_changed = (xr != 0.0 && xr != window->viewport_x_ratio) || (yr != 0.0 && yr != window->viewport_y_ratio) || (xdpi != window->logical_dpi_x) || (ydpi != window->logical_dpi_y);
 
     window->viewport_size_dirty = true;
-    window->has_pending_resizes = false;
-    window->viewport_width = MAX(window->viewport_width, 100);
-    window->viewport_height = MAX(window->viewport_height, 100);
-    window->window_width = MAX(w, 100);
-    window->window_height = MAX(h, 100);
+    window->viewport_width = MAX(window->viewport_width, min_width);
+    window->viewport_height = MAX(window->viewport_height, min_height);
+    window->window_width = MAX(w, min_width);
+    window->window_height = MAX(h, min_height);
     if (notify_boss) {
         call_boss(on_window_resize, "KiiO", window->id, window->viewport_width, window->viewport_height, dpi_changed ? Py_True : Py_False);
-        if (dpi_changed && global_state.is_wayland) {
-           // Fake resize event needed on weston to ensure surface is
-           // positioned correctly after DPI change
-            glfwSetWindowSize(window->handle, window->window_width, window->window_height);
-        }
     }
+}
+
+void
+log_event(const char *format, ...) {
+    if (format)
+    {
+        va_list vl;
+
+        fprintf(stderr, "[%.4f] ", monotonic_t_to_s_double(glfwGetTime()));
+        va_start(vl, format);
+        vfprintf(stderr, format, vl);
+        va_end(vl);
+        fprintf(stderr, "\n");
+    }
+
 }
 
 
@@ -82,7 +138,7 @@ set_callback_window(GLFWwindow *w) {
 }
 
 static inline bool
-is_window_ready_for_callbacks() {
+is_window_ready_for_callbacks(void) {
     OSWindow *w = global_state.callback_os_window;
     if (w->num_tabs == 0) return false;
     Tab *t = w->tabs + w->active_tab;
@@ -97,37 +153,77 @@ show_mouse_cursor(GLFWwindow *w) {
     glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
 
-static int min_width = 100, min_height = 100;
-// On Cocoa, glfwWaitEvents() can block indefinitely because of the way Cocoa
-// works. See https://github.com/glfw/glfw/issues/1251. I have noticed this
-// happening in particular with window resize events, when waiting with no
-// timeout. See https://github.com/kovidgoyal/kitty/issues/458
-// So we use an unlovely hack to workaround that case
-#ifdef __APPLE__
-#define unjam_event_loop() { if (event_loop_blocking_with_no_timeout) wakeup_main_loop(); }
-#else
-#define unjam_event_loop()
-#endif
+void
+blank_os_window(OSWindow *w) {
+    color_type color = OPT(background);
+    if (w->num_tabs > 0) {
+        Tab *t = w->tabs + w->active_tab;
+        if (t->num_windows == 1) {
+            Window *w = t->windows + t->active_window;
+            Screen *s = w->render_data.screen;
+            if (s) {
+                color = colorprofile_to_color(s->color_profile, s->color_profile->overridden.default_bg, s->color_profile->configured.default_bg);
+            }
+        }
+    }
+    blank_canvas(w->is_semi_transparent ? w->background_opacity : 1.0f, color);
+}
+
+static void
+window_close_callback(GLFWwindow* window) {
+    if (!set_callback_window(window)) return;
+    if (global_state.callback_os_window->close_request == NO_CLOSE_REQUESTED) {
+        global_state.callback_os_window->close_request = CONFIRMABLE_CLOSE_REQUESTED;
+        global_state.has_pending_closes = true;
+        request_tick_callback();
+    }
+    glfwSetWindowShouldClose(window, false);
+    global_state.callback_os_window = NULL;
+}
+
+static void
+window_occlusion_callback(GLFWwindow *window, bool occluded) {
+    if (!set_callback_window(window)) return;
+    if (!occluded) global_state.check_for_active_animated_images = true;
+    request_tick_callback();
+    global_state.callback_os_window = NULL;
+}
+
+static void
+window_iconify_callback(GLFWwindow *window, int iconified) {
+    if (!set_callback_window(window)) return;
+    if (!iconified) global_state.check_for_active_animated_images = true;
+    request_tick_callback();
+    global_state.callback_os_window = NULL;
+}
+
+static void
+live_resize_callback(GLFWwindow *w, bool started) {
+    if (!set_callback_window(w)) return;
+    global_state.callback_os_window->live_resize.from_os_notification = true;
+    global_state.callback_os_window->live_resize.in_progress = true;
+    global_state.has_pending_resizes = true;
+    if (!started) {
+        global_state.callback_os_window->live_resize.os_says_resize_complete = true;
+        request_tick_callback();
+    }
+    global_state.callback_os_window = NULL;
+}
 
 static void
 framebuffer_size_callback(GLFWwindow *w, int width, int height) {
     if (!set_callback_window(w)) return;
+    int min_width, min_height; min_size_for_os_window(global_state.callback_os_window, &min_width, &min_height);
     if (width >= min_width && height >= min_height) {
         OSWindow *window = global_state.callback_os_window;
-        window->has_pending_resizes = true; global_state.has_pending_resizes = true;
-        window->last_resize_event_at = monotonic();
-        unjam_event_loop();
-#ifdef __APPLE__
-        // Cocoa starts a sub-loop inside wait events which means main_loop
-        // stays stuck and no rendering happens. This causes the window to be
-        // blank. This is particularly bad for semi-transparent windows since
-        // they are rendered as invisible, so for that case we manually render.
-        if (global_state.callback_os_window->is_semi_transparent) {
-            make_os_window_context_current(global_state.callback_os_window);
-            blank_os_window(global_state.callback_os_window);
-            swap_window_buffers(global_state.callback_os_window);
-        }
-#endif
+        global_state.has_pending_resizes = true;
+        window->live_resize.in_progress = true;
+        window->live_resize.last_resize_event_at = monotonic();
+        window->live_resize.width = MAX(0, width); window->live_resize.height = MAX(0, height);
+        window->live_resize.num_of_resize_events++;
+        make_os_window_context_current(window);
+        update_surface_size(width, height, window->offscreen_texture_id);
+        request_tick_callback();
     } else log_error("Ignoring resize request for tiny size: %dx%d", width, height);
     global_state.callback_os_window = NULL;
 }
@@ -138,9 +234,10 @@ dpi_change_callback(GLFWwindow *w, float x_scale UNUSED, float y_scale UNUSED) {
     // Ensure update_os_window_viewport() is called in the near future, it will
     // take care of DPI changes.
     OSWindow *window = global_state.callback_os_window;
-    window->has_pending_resizes = true; global_state.has_pending_resizes = true;
-    window->last_resize_event_at = monotonic();
+    window->live_resize.in_progress = true; global_state.has_pending_resizes = true;
+    window->live_resize.last_resize_event_at = monotonic();
     global_state.callback_os_window = NULL;
+    request_tick_callback();
 }
 
 static void
@@ -148,17 +245,53 @@ refresh_callback(GLFWwindow *w) {
     if (!set_callback_window(w)) return;
     global_state.callback_os_window->is_damaged = true;
     global_state.callback_os_window = NULL;
+    request_tick_callback();
+}
+
+static int mods_at_last_key_or_button_event = 0;
+
+static inline int
+key_to_modifier(uint32_t key) {
+    switch(key) {
+        case GLFW_FKEY_LEFT_SHIFT:
+        case GLFW_FKEY_RIGHT_SHIFT:
+            return GLFW_MOD_SHIFT;
+        case GLFW_FKEY_LEFT_CONTROL:
+        case GLFW_FKEY_RIGHT_CONTROL:
+            return GLFW_MOD_CONTROL;
+        case GLFW_FKEY_LEFT_ALT:
+        case GLFW_FKEY_RIGHT_ALT:
+            return GLFW_MOD_ALT;
+        case GLFW_FKEY_LEFT_SUPER:
+        case GLFW_FKEY_RIGHT_SUPER:
+            return GLFW_MOD_SUPER;
+        case GLFW_FKEY_LEFT_HYPER:
+        case GLFW_FKEY_RIGHT_HYPER:
+            return GLFW_MOD_HYPER;
+        case GLFW_FKEY_LEFT_META:
+        case GLFW_FKEY_RIGHT_META:
+            return GLFW_MOD_META;
+        default:
+            return -1;
+    }
 }
 
 static void
-key_callback(GLFWwindow *w, int key, int scancode, int action, int mods, const char* text, int state) {
+key_callback(GLFWwindow *w, GLFWkeyevent *ev) {
     if (!set_callback_window(w)) return;
-    global_state.callback_os_window->cursor_blink_zero_time = monotonic();
-    if (key >= 0 && key <= GLFW_KEY_LAST) {
-        global_state.callback_os_window->is_key_pressed[key] = action == GLFW_RELEASE ? false : true;
+    mods_at_last_key_or_button_event = ev->mods;
+    int key_modifier = key_to_modifier(ev->key);
+    if (key_modifier != -1) {
+        if (ev->action == GLFW_RELEASE) {
+            mods_at_last_key_or_button_event &= ~key_modifier;
+        } else {
+            mods_at_last_key_or_button_event |= key_modifier;
+        }
     }
-    if (is_window_ready_for_callbacks()) on_key_input(key, scancode, action, mods, text, state);
+    global_state.callback_os_window->cursor_blink_zero_time = monotonic();
+    if (is_window_ready_for_callbacks()) on_key_input(ev);
     global_state.callback_os_window = NULL;
+    request_tick_callback();
 }
 
 static void
@@ -166,9 +299,10 @@ cursor_enter_callback(GLFWwindow *w, int entered) {
     if (!set_callback_window(w)) return;
     if (entered) {
         show_mouse_cursor(w);
-        double now = monotonic();
+        monotonic_t now = monotonic();
         global_state.callback_os_window->last_mouse_activity_at = now;
         if (is_window_ready_for_callbacks()) enter_event();
+        request_tick_callback();
     }
     global_state.callback_os_window = NULL;
 }
@@ -177,12 +311,14 @@ static void
 mouse_button_callback(GLFWwindow *w, int button, int action, int mods) {
     if (!set_callback_window(w)) return;
     show_mouse_cursor(w);
-    double now = monotonic();
+    mods_at_last_key_or_button_event = mods;
+    monotonic_t now = monotonic();
     global_state.callback_os_window->last_mouse_activity_at = now;
     if (button >= 0 && (unsigned int)button < arraysz(global_state.callback_os_window->mouse_button_pressed)) {
         global_state.callback_os_window->mouse_button_pressed[button] = action == GLFW_PRESS ? true : false;
         if (is_window_ready_for_callbacks()) mouse_event(button, mods, action);
     }
+    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
@@ -190,50 +326,28 @@ static void
 cursor_pos_callback(GLFWwindow *w, double x, double y) {
     if (!set_callback_window(w)) return;
     show_mouse_cursor(w);
-    double now = monotonic();
+    monotonic_t now = monotonic();
     global_state.callback_os_window->last_mouse_activity_at = now;
     global_state.callback_os_window->cursor_blink_zero_time = now;
     global_state.callback_os_window->mouse_x = x * global_state.callback_os_window->viewport_x_ratio;
     global_state.callback_os_window->mouse_y = y * global_state.callback_os_window->viewport_y_ratio;
-    if (is_window_ready_for_callbacks()) mouse_event(-1, 0, -1);
+    if (is_window_ready_for_callbacks()) mouse_event(-1, mods_at_last_key_or_button_event, -1);
+    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
 static void
-scroll_callback(GLFWwindow *w, double xoffset, double yoffset, int flags) {
+scroll_callback(GLFWwindow *w, double xoffset, double yoffset, int flags, int mods) {
     if (!set_callback_window(w)) return;
     show_mouse_cursor(w);
-    double now = monotonic();
+    monotonic_t now = monotonic();
     global_state.callback_os_window->last_mouse_activity_at = now;
-    if (is_window_ready_for_callbacks()) scroll_event(xoffset, yoffset, flags);
+    if (is_window_ready_for_callbacks()) scroll_event(xoffset, yoffset, flags, mods);
+    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
-static struct {
-    id_type entries[16];
-    int next_entry;
-} focus_history;
-
-#ifdef __APPLE__
-static inline id_type
-pop_focus_history() {
-    int index = --focus_history.next_entry;
-    if (index < 0) {
-        focus_history.next_entry = index = 0;
-    }
-
-    id_type result = focus_history.entries[index];
-    focus_history.entries[index] = 0;
-
-    return result;
-}
-#endif
-
-static inline void
-push_focus_history(OSWindow *w) {
-    focus_history.entries[focus_history.next_entry++] = w->id;
-    focus_history.next_entry %= (sizeof(focus_history.entries) / sizeof(*(focus_history.entries)));
-}
+static id_type focus_counter = 0;
 
 static void
 window_focus_callback(GLFWwindow *w, int focused) {
@@ -243,30 +357,85 @@ window_focus_callback(GLFWwindow *w, int focused) {
     if (focused) {
         show_mouse_cursor(w);
         focus_in_event();
-        push_focus_history(global_state.callback_os_window);
+        global_state.callback_os_window->last_focused_counter = ++focus_counter;
+        global_state.check_for_active_animated_images = true;
     }
-    double now = monotonic();
+    monotonic_t now = monotonic();
     global_state.callback_os_window->last_mouse_activity_at = now;
     global_state.callback_os_window->cursor_blink_zero_time = now;
     if (is_window_ready_for_callbacks()) {
         WINDOW_CALLBACK(on_focus, "O", focused ? Py_True : Py_False);
-        glfwUpdateIMEState(global_state.callback_os_window->handle, 1, focused, 0, 0, 0);
+        GLFWIMEUpdateEvent ev = { .type = GLFW_IME_UPDATE_FOCUS, .focused = focused };
+        glfwUpdateIMEState(global_state.callback_os_window->handle, &ev);
     }
+    request_tick_callback();
     global_state.callback_os_window = NULL;
+}
+
+static int
+drop_callback(GLFWwindow *w, const char *mime, const char *data, size_t sz) {
+    if (!set_callback_window(w)) return 0;
+#define RETURN(x) { global_state.callback_os_window = NULL; return x; }
+    if (!data) {
+        if (strcmp(mime, "text/uri-list") == 0) RETURN(3);
+        if (strcmp(mime, "text/plain;charset=utf-8") == 0) RETURN(2);
+        if (strcmp(mime, "text/plain") == 0) RETURN(1);
+        RETURN(0);
+    }
+    WINDOW_CALLBACK(on_drop, "sy#", mime, data, (Py_ssize_t)sz);
+    request_tick_callback();
+    RETURN(0);
+#undef RETURN
 }
 
 static void
-drop_callback(GLFWwindow *w, int count, const char **paths) {
-    if (!set_callback_window(w)) return;
-    PyObject *p = PyTuple_New(count);
-    if (p) {
-        for (int i = 0; i < count; i++) PyTuple_SET_ITEM(p, i, PyUnicode_FromString(paths[i]));
-        WINDOW_CALLBACK(on_drop, "O", p);
-        Py_CLEAR(p);
+application_close_requested_callback(int flags) {
+    if (flags) {
+        global_state.quit_request = IMPERATIVE_CLOSE_REQUESTED;
+        global_state.has_pending_closes = true;
+        request_tick_callback();
+    } else {
+        if (global_state.quit_request == NO_CLOSE_REQUESTED) {
+            global_state.has_pending_closes = true;
+            global_state.quit_request = CONFIRMABLE_CLOSE_REQUESTED;
+            request_tick_callback();
+        }
     }
-    global_state.callback_os_window = NULL;
 }
 
+static inline void get_window_dpi(GLFWwindow *w, double *x, double *y);
+
+#ifdef __APPLE__
+static bool
+apple_file_open_callback(const char* filepath) {
+    set_cocoa_pending_action(OPEN_FILE, filepath);
+    return true;
+}
+#else
+
+static FreeTypeRenderCtx csd_title_render_ctx = NULL;
+
+static bool
+draw_text_callback(GLFWwindow *window, const char *text, uint32_t fg, uint32_t bg, uint8_t *output_buf, size_t width, size_t height, float x_offset, float y_offset, size_t right_margin) {
+    if (!set_callback_window(window)) return false;
+    if (!csd_title_render_ctx) {
+        csd_title_render_ctx = create_freetype_render_context(NULL, true, false);
+        if (!csd_title_render_ctx) {
+            if (PyErr_Occurred()) PyErr_Print();
+            return false;
+        }
+    }
+    double xdpi, ydpi;
+    get_window_dpi(window, &xdpi, &ydpi);
+    unsigned px_sz = (unsigned)(global_state.callback_os_window->font_sz_in_pts * ydpi / 72.);
+    px_sz = MIN(px_sz, 3 * height / 4);
+    static char title[2048];
+    snprintf(title, sizeof(title), "🐱 %s", text);
+    bool ok = render_single_line(csd_title_render_ctx, title, px_sz, fg, bg, output_buf, width, height, x_offset, y_offset, right_margin);
+    if (!ok && PyErr_Occurred()) PyErr_Print();
+    return ok;
+}
+#endif
 // }}}
 
 void
@@ -291,12 +460,15 @@ static GLFWimage logo = {0};
 
 static PyObject*
 set_default_window_icon(PyObject UNUSED *self, PyObject *args) {
-    Py_ssize_t sz;
-    const char *logo_data;
-    if(!PyArg_ParseTuple(args, "s#ii", &(logo_data), &sz, &(logo.width), &(logo.height))) return NULL;
-    sz = (MAX(logo.width * logo.height, sz));
-    logo.pixels = malloc(sz);
-    if (logo.pixels) memcpy(logo.pixels, logo_data, sz);
+    size_t sz;
+    unsigned int width, height;
+    const char *path;
+    uint8_t *data;
+    if(!PyArg_ParseTuple(args, "s", &path)) return NULL;
+    if (png_path_to_bitmap(path, &data, &width, &height, &sz)) {
+        logo.width = width; logo.height = height;
+        logo.pixels = data;
+    }
     Py_RETURN_NONE;
 }
 
@@ -310,57 +482,30 @@ make_os_window_context_current(OSWindow *w) {
 }
 
 
-#ifndef __APPLE__
-static GLFWmonitor*
-current_monitor(GLFWwindow *window) {
-    // Find the monitor that has the maximum overlap with this window
-    int nmonitors, i;
-    int wx, wy, ww, wh;
-    int mx, my, mw, mh;
-    int overlap = 0, bestoverlap = 0;
-    GLFWmonitor *bestmonitor = NULL;
-    GLFWmonitor **monitors = NULL;
-    const GLFWvidmode *mode;
-
-    glfwGetWindowPos(window, &wx, &wy);
-    glfwGetWindowSize(window, &ww, &wh);
-    monitors = glfwGetMonitors(&nmonitors);
-    if (monitors == NULL || nmonitors < 1) { PyErr_SetString(PyExc_ValueError, "No monitors connected"); return NULL; }
-
-    for (i = 0; i < nmonitors; i++) {
-        mode = glfwGetVideoMode(monitors[i]);
-        glfwGetMonitorPos(monitors[i], &mx, &my);
-        mw = mode->width;
-        mh = mode->height;
-
-        overlap =
-            MAX(0, MIN(wx + ww, mx + mw) - MAX(wx, mx)) *
-            MAX(0, MIN(wy + wh, my + mh) - MAX(wy, my));
-
-        if (bestoverlap < overlap || bestmonitor == NULL) {
-            bestoverlap = overlap;
-            bestmonitor = monitors[i];
-        }
+static inline void
+get_window_content_scale(GLFWwindow *w, float *xscale, float *yscale, double *xdpi, double *ydpi) {
+    *xscale = 1; *yscale = 1;
+    if (w) glfwGetWindowContentScale(w, xscale, yscale);
+    else {
+        GLFWmonitor *monitor = glfwGetPrimaryMonitor();
+        if (monitor) glfwGetMonitorContentScale(monitor, xscale, yscale);
     }
-
-    return bestmonitor;
-}
+    // check for zero, negative, NaN or excessive values of xscale/yscale
+    if (*xscale <= 0.0001 || *xscale != *xscale || *xscale >= 24) *xscale = 1.0;
+    if (*yscale <= 0.0001 || *yscale != *yscale || *yscale >= 24) *yscale = 1.0;
+#ifdef __APPLE__
+    const double factor = 72.0;
+#else
+    const double factor = 96.0;
 #endif
+    *xdpi = *xscale * factor;
+    *ydpi = *yscale * factor;
+}
 
 static inline void
 get_window_dpi(GLFWwindow *w, double *x, double *y) {
-    float xscale = 1, yscale = 1;
-    if (w) glfwGetWindowContentScale(w, &xscale, &yscale);
-    else glfwGetMonitorContentScale(glfwGetPrimaryMonitor(), &xscale, &yscale);
-    if (!xscale) xscale = 1.0;
-    if (!yscale) yscale = 1.0;
-#ifdef __APPLE__
-    double factor = 72.0;
-#else
-    double factor = 96.0;
-#endif
-    *x = xscale * factor;
-    *y = yscale * factor;
+    float xscale, yscale;
+    get_window_content_scale(w, &xscale, &yscale, x, y);
 }
 
 static void
@@ -368,82 +513,85 @@ set_os_window_dpi(OSWindow *w) {
     get_window_dpi(w->handle, &w->logical_dpi_x, &w->logical_dpi_y);
 }
 
-static bool
-toggle_fullscreen_for_os_window(OSWindow *w) {
+static inline bool
+do_toggle_fullscreen(OSWindow *w) {
     int width, height, x, y;
     glfwGetWindowSize(w->handle, &width, &height);
     glfwGetWindowPos(w->handle, &x, &y);
-#ifdef __APPLE__
-    if (OPT(macos_traditional_fullscreen)) {
-        if (cocoa_toggle_fullscreen(glfwGetCocoaWindow(w->handle), true)) {
-            w->before_fullscreen.is_set = true;
-            w->before_fullscreen.w = width; w->before_fullscreen.h = height; w->before_fullscreen.x = x; w->before_fullscreen.y = y;
-            return true;
-        }
-        if (w->before_fullscreen.is_set) {
-            glfwSetWindowSize(w->handle, w->before_fullscreen.w, w->before_fullscreen.h);
-            glfwSetWindowPos(w->handle, w->before_fullscreen.x, w->before_fullscreen.y);
-        }
-        return false;
-    } else {
-        return cocoa_toggle_fullscreen(glfwGetCocoaWindow(w->handle), false);
-    }
-#else
-    GLFWmonitor *monitor;
-    if ((monitor = glfwGetWindowMonitor(w->handle)) == NULL) {
-        // make fullscreen
-        monitor = current_monitor(w->handle);
-        if (monitor == NULL) { PyErr_Print(); return false; }
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    if (glfwToggleFullscreen(w->handle, 0)) {
         w->before_fullscreen.is_set = true;
         w->before_fullscreen.w = width; w->before_fullscreen.h = height; w->before_fullscreen.x = x; w->before_fullscreen.y = y;
-        glfwGetWindowSize(w->handle, &w->before_fullscreen.w, &w->before_fullscreen.h);
-        glfwGetWindowPos(w->handle, &w->before_fullscreen.x, &w->before_fullscreen.y);
-        glfwSetWindowMonitor(w->handle, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
         return true;
-    } else {
-        // make windowed
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-        if (w->before_fullscreen.is_set) glfwSetWindowMonitor(w->handle, NULL, w->before_fullscreen.x, w->before_fullscreen.y, w->before_fullscreen.w, w->before_fullscreen.h, mode->refreshRate);
-        else glfwSetWindowMonitor(w->handle, NULL, 0, 0, 600, 400, mode->refreshRate);
-        return false;
     }
-#endif
-}
-
-
-#ifdef __APPLE__
-static int
-filter_option(int key UNUSED, int mods, unsigned int scancode UNUSED) {
-    return ((mods == GLFW_MOD_ALT) || (mods == (GLFW_MOD_ALT | GLFW_MOD_SHIFT))) ? 1 : 0;
-}
-
-static GLFWwindow *application_quit_canary = NULL;
-
-static int
-on_application_reopen(int has_visible_windows) {
-    if (has_visible_windows) return true;
-    set_cocoa_pending_action(NEW_OS_WINDOW);
-    // Without unjam wait_for_events() blocks until the next event
-    unjam_event_loop();
+    if (w->before_fullscreen.is_set) {
+        glfwSetWindowSize(w->handle, w->before_fullscreen.w, w->before_fullscreen.h);
+        glfwSetWindowPos(w->handle, w->before_fullscreen.x, w->before_fullscreen.y);
+    }
     return false;
 }
 
+static bool
+toggle_fullscreen_for_os_window(OSWindow *w) {
+    if (w && w->handle) {
+#ifdef __APPLE__
+    if (!OPT(macos_traditional_fullscreen)) return glfwToggleFullscreen(w->handle, 1);
+#endif
+    return do_toggle_fullscreen(w);
+    }
+    return false;
+}
+
+static bool
+toggle_maximized_for_os_window(OSWindow *w) {
+    bool maximized = false;
+    if (w && w->handle) {
+        if (glfwGetWindowAttrib(w->handle, GLFW_MAXIMIZED)) {
+            glfwRestoreWindow(w->handle);
+        } else {
+            glfwMaximizeWindow(w->handle);
+            maximized = true;
+        }
+    }
+    return maximized;
+}
+
+
+#ifdef __APPLE__
+static GLFWwindow *apple_preserve_common_context = NULL;
+
 static int
+filter_option(int key UNUSED, int mods, unsigned int native_key UNUSED, unsigned long flags) {
+    if ((mods == GLFW_MOD_ALT) || (mods == (GLFW_MOD_ALT | GLFW_MOD_SHIFT))) {
+        if (OPT(macos_option_as_alt) == 3) return 1;
+        if (cocoa_alt_option_key_pressed(flags)) return 1;
+    }
+    return 0;
+}
+
+static bool
+on_application_reopen(int has_visible_windows) {
+    if (has_visible_windows) return true;
+    set_cocoa_pending_action(NEW_OS_WINDOW, NULL);
+    return false;
+}
+
+static bool
 intercept_cocoa_fullscreen(GLFWwindow *w) {
-    if (!OPT(macos_traditional_fullscreen) || !set_callback_window(w)) return 0;
+    if (!OPT(macos_traditional_fullscreen) || !set_callback_window(w)) return false;
     toggle_fullscreen_for_os_window(global_state.callback_os_window);
     global_state.callback_os_window = NULL;
-    return 1;
+    return true;
 }
 #endif
 
 void
-set_titlebar_color(OSWindow *w, color_type color) {
+set_titlebar_color(OSWindow *w, color_type color, bool use_system_color) {
     if (w->handle && (!w->last_titlebar_color || (w->last_titlebar_color & 0xffffff) != (color & 0xffffff))) {
         w->last_titlebar_color = (1 << 24) | (color & 0xffffff);
 #ifdef __APPLE__
-        cocoa_set_titlebar_color(glfwGetCocoaWindow(w->handle), color);
+        if (!use_system_color) cocoa_set_titlebar_color(glfwGetCocoaWindow(w->handle), color);
+#else
+        if (global_state.is_wayland && glfwWaylandSetTitlebarColor) glfwWaylandSetTitlebarColor(w->handle, color, use_system_color);
 #endif
     }
 }
@@ -474,19 +622,20 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         // We don't use depth and stencil buffers
         glfwWindowHint(GLFW_DEPTH_BITS, 0);
         glfwWindowHint(GLFW_STENCIL_BITS, 0);
+        if (OPT(hide_window_decorations) & 1) glfwWindowHint(GLFW_DECORATED, false);
+        glfwSetApplicationCloseCallback(application_close_requested_callback);
 #ifdef __APPLE__
+        cocoa_set_activation_policy(OPT(macos_hide_from_tasks));
         glfwWindowHint(GLFW_COCOA_GRAPHICS_SWITCHING, true);
         glfwSetApplicationShouldHandleReopen(on_application_reopen);
-        if (OPT(hide_window_decorations)) glfwWindowHint(GLFW_DECORATED, false);
+        glfwSetApplicationWillFinishLaunching(cocoa_create_global_menu);
 #endif
-
     }
 
 #ifndef __APPLE__
     glfwWindowHintString(GLFW_X11_INSTANCE_NAME, wm_class_name);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, wm_class_class);
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, wm_class_class);
-    if (OPT(hide_window_decorations)) glfwWindowHint(GLFW_DECORATED, false);
 #endif
 
     if (global_state.num_os_windows >= MAX_CHILDREN) {
@@ -498,22 +647,26 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     // We use a temp window to avoid the need to set the window size after
     // creation, which causes a resize event and all the associated processing.
     // The temp window is used to get the DPI.
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_VISIBLE, false);
     GLFWwindow *common_context = global_state.num_os_windows ? global_state.os_windows[0].handle : NULL;
+    GLFWwindow *temp_window = NULL;
 #ifdef __APPLE__
-    if (is_first_window && !application_quit_canary) {
-        application_quit_canary = glfwCreateWindow(100, 200, "quit_canary", NULL, NULL);
+    if (!apple_preserve_common_context) {
+        apple_preserve_common_context = glfwCreateWindow(640, 480, "kitty", NULL, common_context);
     }
-    if (!common_context) common_context = application_quit_canary;
+    if (!common_context) common_context = apple_preserve_common_context;
 #endif
-
-    GLFWwindow *temp_window = glfwCreateWindow(640, 480, "temp", NULL, common_context);
-    if (temp_window == NULL) { fatal("Failed to create GLFW temp window! This usually happens because of old/broken OpenGL drivers. kitty requires working OpenGL 3.3 drivers."); }
-
-    double dpi_x, dpi_y;
-    get_window_dpi(temp_window, &dpi_x, &dpi_y);
-    FONTS_DATA_HANDLE fonts_data = load_fonts_data(global_state.font_sz_in_pts, dpi_x, dpi_y);
-    PyObject *ret = PyObject_CallFunction(get_window_size, "IIdd", fonts_data->cell_width, fonts_data->cell_height, fonts_data->logical_dpi_x, fonts_data->logical_dpi_y);
+    if (!global_state.is_wayland) {
+        // On Wayland windows dont get a content scale until they receive an enterEvent anyway
+        // which won't happen until the event loop ticks, so using a temp window is useless.
+        temp_window = glfwCreateWindow(640, 480, "temp", NULL, common_context);
+        if (temp_window == NULL) { fatal("Failed to create GLFW temp window! This usually happens because of old/broken OpenGL drivers. kitty requires working OpenGL 3.3 drivers."); }
+    }
+    float xscale, yscale;
+    double xdpi, ydpi;
+    get_window_content_scale(temp_window, &xscale, &yscale, &xdpi, &ydpi);
+    FONTS_DATA_HANDLE fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);
+    PyObject *ret = PyObject_CallFunction(get_window_size, "IIddff", fonts_data->cell_width, fonts_data->cell_height, fonts_data->logical_dpi_x, fonts_data->logical_dpi_y, xscale, yscale);
     if (ret == NULL) return NULL;
     int width = PyLong_AsLong(PyTuple_GET_ITEM(ret, 0)), height = PyLong_AsLong(PyTuple_GET_ITEM(ret, 1));
     Py_CLEAR(ret);
@@ -522,36 +675,52 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     // https://github.com/glfw/glfw/issues/1268 It doesn't matter since there
     // is no startup notification in Wayland anyway. It amazes me that anyone
     // uses Wayland as anything other than a butt for jokes.
-    if (global_state.is_wayland) glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
-    GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, temp_window);
-    glfwDestroyWindow(temp_window); temp_window = NULL;
+    if (global_state.is_wayland) glfwWindowHint(GLFW_VISIBLE, true);
+    GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, temp_window ? temp_window : common_context);
+    if (temp_window) { glfwDestroyWindow(temp_window); temp_window = NULL; }
     if (glfw_window == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to create GLFWwindow"); return NULL; }
+    glfwMakeContextCurrent(glfw_window);
+    if (is_first_window) {
+        gl_init();
+    }
+    bool is_semi_transparent = glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER);
+    // blank the window once so that there is no initial flash of color
+    // changing, in case the background color is not black
+    blank_canvas(is_semi_transparent ? OPT(background_opacity) : 1.0f, OPT(background));
+#ifndef __APPLE__
+    if (is_first_window) glfwSwapInterval(OPT(sync_to_monitor) && !global_state.is_wayland ? 1 : 0);
+#endif
+    glfwSwapBuffers(glfw_window);
+    glfwSetInputMode(glfw_window, GLFW_LOCK_KEY_MODS, true);
     if (!global_state.is_wayland) {
         PyObject *pret = PyObject_CallFunction(pre_show_callback, "N", native_window_handle(glfw_window));
         if (pret == NULL) return NULL;
         Py_DECREF(pret);
         if (x != -1 && y != -1) glfwSetWindowPos(glfw_window, x, y);
         glfwShowWindow(glfw_window);
+#ifdef __APPLE__
+        float n_xscale, n_yscale;
+        double n_xdpi, n_ydpi;
+        get_window_content_scale(glfw_window, &n_xscale, &n_yscale, &n_xdpi, &n_ydpi);
+        if (n_xdpi != xdpi || n_ydpi != ydpi) {
+            // this can happen if the window is moved by the OS to a different monitor when shown
+            xdpi = n_xdpi; ydpi = n_ydpi;
+            fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);
+        }
+#endif
     }
-    glfwMakeContextCurrent(glfw_window);
     if (is_first_window) {
-        gl_init();
-        PyObject *ret = PyObject_CallFunction(load_programs, "i", glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER));
+        PyObject *ret = PyObject_CallFunction(load_programs, "O", is_semi_transparent ? Py_True : Py_False);
         if (ret == NULL) return NULL;
         Py_DECREF(ret);
-#ifdef __APPLE__
-        cocoa_create_global_menu();
-        // This needs to be done only after the first window has been created, because glfw only sets the activation policy once upon initialization.
-        if (OPT(macos_hide_from_tasks)) cocoa_set_hide_from_tasks();
-#endif
 #define CC(dest, shape) {\
     if (!dest##_cursor) { \
         dest##_cursor = glfwCreateStandardCursor(GLFW_##shape##_CURSOR); \
         if (dest##_cursor == NULL) { log_error("Failed to create the %s mouse cursor, using default cursor.", #shape); } \
 }}
-    CC(standard, IBEAM); CC(click, HAND); CC(arrow, ARROW);
+        CC(standard, IBEAM); CC(click, HAND); CC(arrow, ARROW);
 #undef CC
-        if (OPT(click_interval) < 0) OPT(click_interval) = glfwGetDoubleClickInterval(glfw_window);
+        get_platform_dependent_config_values(glfw_window);
         is_first_window = false;
     }
     OSWindow *w = add_os_window();
@@ -562,11 +731,11 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         OSWindow *q = global_state.os_windows + i;
         q->is_focused = q == w ? true : false;
     }
-    w->logical_dpi_x = dpi_x; w->logical_dpi_y = dpi_y;
+    w->logical_dpi_x = xdpi; w->logical_dpi_y = ydpi;
     w->fonts_data = fonts_data;
     w->shown_once = true;
-    push_focus_history(w);
-    glfwSwapInterval(OPT(sync_to_monitor) && !global_state.is_wayland ? 1 : 0);
+    w->last_focused_counter = ++focus_counter;
+    os_window_update_size_increments(w);
 #ifdef __APPLE__
     if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
     glfwSetCocoaToggleFullscreenIntercept(glfw_window, intercept_cocoa_fullscreen);
@@ -575,25 +744,38 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     if (logo.pixels && logo.width && logo.height) glfwSetWindowIcon(glfw_window, 1, &logo);
     glfwSetCursor(glfw_window, standard_cursor);
     update_os_window_viewport(w, false);
-    glfwSetFramebufferSizeCallback(glfw_window, framebuffer_size_callback);
-    glfwSetWindowContentScaleCallback(glfw_window, dpi_change_callback);
+    // missing pos callback
+    // missing size callback
+    glfwSetWindowCloseCallback(glfw_window, window_close_callback);
     glfwSetWindowRefreshCallback(glfw_window, refresh_callback);
-    glfwSetCursorEnterCallback(glfw_window, cursor_enter_callback);
-    glfwSetMouseButtonCallback(glfw_window, mouse_button_callback);
-    glfwSetScrollCallback(glfw_window, scroll_callback);
-    glfwSetCursorPosCallback(glfw_window, cursor_pos_callback);
-    glfwSetKeyboardCallback(glfw_window, key_callback);
     glfwSetWindowFocusCallback(glfw_window, window_focus_callback);
+    glfwSetWindowOcclusionCallback(glfw_window, window_occlusion_callback);
+    glfwSetWindowIconifyCallback(glfw_window, window_iconify_callback);
+    // missing maximize/restore callback
+    glfwSetFramebufferSizeCallback(glfw_window, framebuffer_size_callback);
+    glfwSetLiveResizeCallback(glfw_window, live_resize_callback);
+    glfwSetWindowContentScaleCallback(glfw_window, dpi_change_callback);
+    glfwSetMouseButtonCallback(glfw_window, mouse_button_callback);
+    glfwSetCursorPosCallback(glfw_window, cursor_pos_callback);
+    glfwSetCursorEnterCallback(glfw_window, cursor_enter_callback);
+    glfwSetScrollCallback(glfw_window, scroll_callback);
+    glfwSetKeyboardCallback(glfw_window, key_callback);
     glfwSetDropCallback(glfw_window, drop_callback);
 #ifdef __APPLE__
-    if (glfwGetCocoaWindow) cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window), OPT(macos_window_resizable));
-    else log_error("Failed to load glfwGetCocoaWindow");
+    if (glfwGetCocoaWindow) {
+        if (OPT(hide_window_decorations) & 2) {
+            glfwHideCocoaTitlebar(glfw_window, true);
+        } else if (!(OPT(macos_show_window_title_in) & WINDOW)) {
+            cocoa_hide_window_title(glfwGetCocoaWindow(glfw_window));
+        }
+        cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window), OPT(macos_window_resizable));
+    } else log_error("Failed to load glfwGetCocoaWindow");
 #endif
-    double now = monotonic();
+    monotonic_t now = monotonic();
     w->is_focused = true;
     w->cursor_blink_zero_time = now;
     w->last_mouse_activity_at = now;
-    w->is_semi_transparent = glfwGetWindowAttrib(w->handle, GLFW_TRANSPARENT_FRAMEBUFFER);
+    w->is_semi_transparent = is_semi_transparent;
     if (want_semi_transparent && !w->is_semi_transparent) {
         static bool warned = false;
         if (!warned) {
@@ -605,8 +787,60 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
 }
 
 void
+os_window_update_size_increments(OSWindow *window) {
+    if (OPT(resize_in_steps)) {
+        if (window->handle && window->fonts_data) glfwSetWindowSizeIncrements(
+                window->handle, window->fonts_data->cell_width, window->fonts_data->cell_height);
+    } else {
+        if (window->handle) glfwSetWindowSizeIncrements(
+                window->handle, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    }
+}
+
+#ifdef __APPLE__
+static inline bool
+window_in_same_cocoa_workspace(void *w, size_t *source_workspaces, size_t source_workspace_count) {
+    static size_t workspaces[64];
+    size_t workspace_count = cocoa_get_workspace_ids(w, workspaces, arraysz(workspaces));
+    for (size_t i = 0; i < workspace_count; i++) {
+        for (size_t s = 0; s < source_workspace_count; s++) {
+            if (source_workspaces[s] == workspaces[i]) return true;
+        }
+    }
+    return false;
+}
+
+static inline void
+cocoa_focus_last_window(id_type source_window_id, size_t *source_workspaces, size_t source_workspace_count) {
+    id_type highest_focus_number = 0;
+    OSWindow *window_to_focus = NULL;
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        OSWindow *w = global_state.os_windows + i;
+        if (
+                w->id != source_window_id && w->handle && w->shown_once &&
+                w->last_focused_counter >= highest_focus_number &&
+                (!source_workspace_count || window_in_same_cocoa_workspace(glfwGetCocoaWindow(w->handle), source_workspaces, source_workspace_count))
+        ) {
+            highest_focus_number = w->last_focused_counter;
+            window_to_focus = w;
+        }
+    }
+    if (window_to_focus) {
+        glfwFocusWindow(window_to_focus->handle);
+    }
+}
+#endif
+
+void
 destroy_os_window(OSWindow *w) {
+#ifdef __APPLE__
+    static size_t source_workspaces[64];
+    size_t source_workspace_count = 0;
+#endif
     if (w->handle) {
+#ifdef __APPLE__
+        source_workspace_count = cocoa_get_workspace_ids(glfwGetCocoaWindow(w->handle), source_workspaces, arraysz(source_workspaces));
+#endif
         // Ensure mouse cursor is visible and reset to default shape, needed on macOS
         show_mouse_cursor(w->handle);
         glfwSetCursor(w->handle, NULL);
@@ -616,19 +850,7 @@ destroy_os_window(OSWindow *w) {
 #ifdef __APPLE__
     // On macOS when closing a window, any other existing windows belonging to the same application do not
     // automatically get focus, so we do it manually.
-    bool change_focus = true;
-    while (change_focus) {
-        id_type new_focus_id = pop_focus_history();
-        if (new_focus_id == 0) break;
-        for (size_t i = 0; i < global_state.num_os_windows; i++) {
-            OSWindow *c = global_state.os_windows + i;
-            if (c->id != w->id && c->handle && c->shown_once && (c->id == new_focus_id)) {
-                glfwFocusWindow(c->handle);
-                change_focus = false;
-                break;
-            }
-        }
-    }
+    cocoa_focus_last_window(w->id, source_workspaces, source_workspace_count);
 #endif
 }
 
@@ -645,13 +867,6 @@ focus_os_window(OSWindow *w, bool also_raise) {
     }
 }
 
-#ifdef __APPLE__
-bool
-application_quit_requested() {
-    return !application_quit_canary || glfwWindowShouldClose(application_quit_canary);
-}
-#endif
-
 // Global functions {{{
 static void
 error_callback(int error, const char* description) {
@@ -659,25 +874,40 @@ error_callback(int error, const char* description) {
 }
 
 
-PyObject*
+#ifndef __APPLE__
+static void
+dbus_user_notification_activated(uint32_t notification_id, const char* action) {
+    unsigned long nid = notification_id;
+    call_boss(dbus_notification_callback, "Oks", Py_True, nid, action);
+}
+#endif
+
+static PyObject*
 glfw_init(PyObject UNUSED *self, PyObject *args) {
     const char* path;
-    int debug_keyboard = 0;
-    if (!PyArg_ParseTuple(args, "s|p", &path, &debug_keyboard)) return NULL;
+    int debug_keyboard = 0, debug_rendering = 0;
+    if (!PyArg_ParseTuple(args, "s|pp", &path, &debug_keyboard, &debug_rendering)) return NULL;
     const char* err = load_glfw(path);
     if (err) { PyErr_SetString(PyExc_RuntimeError, err); return NULL; }
     glfwSetErrorCallback(error_callback);
     glfwInitHint(GLFW_DEBUG_KEYBOARD, debug_keyboard);
-    // Joysticks cause slow startup on some linux systems, see
-    // https://github.com/kovidgoyal/kitty/issues/830
-    glfwInitHint(GLFW_ENABLE_JOYSTICKS, 0);
-    global_state.opts.debug_keyboard = debug_keyboard != 0;
+    glfwInitHint(GLFW_DEBUG_RENDERING, debug_rendering);
+    OPT(debug_keyboard) = debug_keyboard != 0;
 #ifdef __APPLE__
     glfwInitHint(GLFW_COCOA_CHDIR_RESOURCES, 0);
     glfwInitHint(GLFW_COCOA_MENUBAR, 0);
+#else
+    if (glfwDBusSetUserNotificationHandler) {
+        glfwDBusSetUserNotificationHandler(dbus_user_notification_activated);
+    }
 #endif
-    PyObject *ans = glfwInit() ? Py_True: Py_False;
+    PyObject *ans = glfwInit(monotonic_start_time) ? Py_True: Py_False;
     if (ans == Py_True) {
+#ifdef __APPLE__
+        glfwSetCocoaFileOpenCallback(apple_file_open_callback);
+#else
+        glfwSetDrawTextFunction(draw_text_callback);
+#endif
         OSWindow w = {0};
         set_os_window_dpi(&w);
         global_state.default_dpi.x = w.logical_dpi_x;
@@ -687,21 +917,9 @@ glfw_init(PyObject UNUSED *self, PyObject *args) {
     return ans;
 }
 
-PyObject*
+static PyObject*
 glfw_terminate(PYNOARG) {
     glfwTerminate();
-    Py_RETURN_NONE;
-}
-
-PyObject*
-glfw_post_empty_event(PYNOARG) {
-    glfwPostEmptyEvent();
-    Py_RETURN_NONE;
-}
-
-PyObject*
-glfw_poll_events(PYNOARG) {
-    glfwPollEvents();
     Py_RETURN_NONE;
 }
 
@@ -712,26 +930,149 @@ get_physical_dpi(GLFWmonitor *m) {
     if (width == 0 || height == 0) { PyErr_SetString(PyExc_ValueError, "Failed to get primary monitor size"); return NULL; }
     const GLFWvidmode *vm = glfwGetVideoMode(m);
     if (vm == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to get video mode for monitor"); return NULL; }
-    float dpix = vm->width / (width / 25.4);
-    float dpiy = vm->height / (height / 25.4);
+    float dpix = (float)(vm->width / (width / 25.4));
+    float dpiy = (float)(vm->height / (height / 25.4));
     return Py_BuildValue("ff", dpix, dpiy);
 }
 
-PyObject*
+static PyObject*
 glfw_get_physical_dpi(PYNOARG) {
     GLFWmonitor *m = glfwGetPrimaryMonitor();
     if (m == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to get primary monitor"); return NULL; }
     return get_physical_dpi(m);
 }
 
-PyObject*
+static PyObject*
 glfw_get_key_name(PyObject UNUSED *self, PyObject *args) {
-    int key, scancode;
-    if (!PyArg_ParseTuple(args, "ii", &key, &scancode)) return NULL;
-    return Py_BuildValue("s", glfwGetKeyName(key, scancode));
+    int key, native_key;
+    if (!PyArg_ParseTuple(args, "ii", &key, &native_key)) return NULL;
+    if (key) {
+        switch (key) {
+            /* start glfw functional key names (auto generated by gen-key-constants.py do not edit) */
+            case GLFW_FKEY_ESCAPE: return PyUnicode_FromString("escape");
+            case GLFW_FKEY_ENTER: return PyUnicode_FromString("enter");
+            case GLFW_FKEY_TAB: return PyUnicode_FromString("tab");
+            case GLFW_FKEY_BACKSPACE: return PyUnicode_FromString("backspace");
+            case GLFW_FKEY_INSERT: return PyUnicode_FromString("insert");
+            case GLFW_FKEY_DELETE: return PyUnicode_FromString("delete");
+            case GLFW_FKEY_LEFT: return PyUnicode_FromString("left");
+            case GLFW_FKEY_RIGHT: return PyUnicode_FromString("right");
+            case GLFW_FKEY_UP: return PyUnicode_FromString("up");
+            case GLFW_FKEY_DOWN: return PyUnicode_FromString("down");
+            case GLFW_FKEY_PAGE_UP: return PyUnicode_FromString("page_up");
+            case GLFW_FKEY_PAGE_DOWN: return PyUnicode_FromString("page_down");
+            case GLFW_FKEY_HOME: return PyUnicode_FromString("home");
+            case GLFW_FKEY_END: return PyUnicode_FromString("end");
+            case GLFW_FKEY_CAPS_LOCK: return PyUnicode_FromString("caps_lock");
+            case GLFW_FKEY_SCROLL_LOCK: return PyUnicode_FromString("scroll_lock");
+            case GLFW_FKEY_NUM_LOCK: return PyUnicode_FromString("num_lock");
+            case GLFW_FKEY_PRINT_SCREEN: return PyUnicode_FromString("print_screen");
+            case GLFW_FKEY_PAUSE: return PyUnicode_FromString("pause");
+            case GLFW_FKEY_MENU: return PyUnicode_FromString("menu");
+            case GLFW_FKEY_F1: return PyUnicode_FromString("f1");
+            case GLFW_FKEY_F2: return PyUnicode_FromString("f2");
+            case GLFW_FKEY_F3: return PyUnicode_FromString("f3");
+            case GLFW_FKEY_F4: return PyUnicode_FromString("f4");
+            case GLFW_FKEY_F5: return PyUnicode_FromString("f5");
+            case GLFW_FKEY_F6: return PyUnicode_FromString("f6");
+            case GLFW_FKEY_F7: return PyUnicode_FromString("f7");
+            case GLFW_FKEY_F8: return PyUnicode_FromString("f8");
+            case GLFW_FKEY_F9: return PyUnicode_FromString("f9");
+            case GLFW_FKEY_F10: return PyUnicode_FromString("f10");
+            case GLFW_FKEY_F11: return PyUnicode_FromString("f11");
+            case GLFW_FKEY_F12: return PyUnicode_FromString("f12");
+            case GLFW_FKEY_F13: return PyUnicode_FromString("f13");
+            case GLFW_FKEY_F14: return PyUnicode_FromString("f14");
+            case GLFW_FKEY_F15: return PyUnicode_FromString("f15");
+            case GLFW_FKEY_F16: return PyUnicode_FromString("f16");
+            case GLFW_FKEY_F17: return PyUnicode_FromString("f17");
+            case GLFW_FKEY_F18: return PyUnicode_FromString("f18");
+            case GLFW_FKEY_F19: return PyUnicode_FromString("f19");
+            case GLFW_FKEY_F20: return PyUnicode_FromString("f20");
+            case GLFW_FKEY_F21: return PyUnicode_FromString("f21");
+            case GLFW_FKEY_F22: return PyUnicode_FromString("f22");
+            case GLFW_FKEY_F23: return PyUnicode_FromString("f23");
+            case GLFW_FKEY_F24: return PyUnicode_FromString("f24");
+            case GLFW_FKEY_F25: return PyUnicode_FromString("f25");
+            case GLFW_FKEY_F26: return PyUnicode_FromString("f26");
+            case GLFW_FKEY_F27: return PyUnicode_FromString("f27");
+            case GLFW_FKEY_F28: return PyUnicode_FromString("f28");
+            case GLFW_FKEY_F29: return PyUnicode_FromString("f29");
+            case GLFW_FKEY_F30: return PyUnicode_FromString("f30");
+            case GLFW_FKEY_F31: return PyUnicode_FromString("f31");
+            case GLFW_FKEY_F32: return PyUnicode_FromString("f32");
+            case GLFW_FKEY_F33: return PyUnicode_FromString("f33");
+            case GLFW_FKEY_F34: return PyUnicode_FromString("f34");
+            case GLFW_FKEY_F35: return PyUnicode_FromString("f35");
+            case GLFW_FKEY_KP_0: return PyUnicode_FromString("kp_0");
+            case GLFW_FKEY_KP_1: return PyUnicode_FromString("kp_1");
+            case GLFW_FKEY_KP_2: return PyUnicode_FromString("kp_2");
+            case GLFW_FKEY_KP_3: return PyUnicode_FromString("kp_3");
+            case GLFW_FKEY_KP_4: return PyUnicode_FromString("kp_4");
+            case GLFW_FKEY_KP_5: return PyUnicode_FromString("kp_5");
+            case GLFW_FKEY_KP_6: return PyUnicode_FromString("kp_6");
+            case GLFW_FKEY_KP_7: return PyUnicode_FromString("kp_7");
+            case GLFW_FKEY_KP_8: return PyUnicode_FromString("kp_8");
+            case GLFW_FKEY_KP_9: return PyUnicode_FromString("kp_9");
+            case GLFW_FKEY_KP_DECIMAL: return PyUnicode_FromString("kp_decimal");
+            case GLFW_FKEY_KP_DIVIDE: return PyUnicode_FromString("kp_divide");
+            case GLFW_FKEY_KP_MULTIPLY: return PyUnicode_FromString("kp_multiply");
+            case GLFW_FKEY_KP_SUBTRACT: return PyUnicode_FromString("kp_subtract");
+            case GLFW_FKEY_KP_ADD: return PyUnicode_FromString("kp_add");
+            case GLFW_FKEY_KP_ENTER: return PyUnicode_FromString("kp_enter");
+            case GLFW_FKEY_KP_EQUAL: return PyUnicode_FromString("kp_equal");
+            case GLFW_FKEY_KP_SEPARATOR: return PyUnicode_FromString("kp_separator");
+            case GLFW_FKEY_KP_LEFT: return PyUnicode_FromString("kp_left");
+            case GLFW_FKEY_KP_RIGHT: return PyUnicode_FromString("kp_right");
+            case GLFW_FKEY_KP_UP: return PyUnicode_FromString("kp_up");
+            case GLFW_FKEY_KP_DOWN: return PyUnicode_FromString("kp_down");
+            case GLFW_FKEY_KP_PAGE_UP: return PyUnicode_FromString("kp_page_up");
+            case GLFW_FKEY_KP_PAGE_DOWN: return PyUnicode_FromString("kp_page_down");
+            case GLFW_FKEY_KP_HOME: return PyUnicode_FromString("kp_home");
+            case GLFW_FKEY_KP_END: return PyUnicode_FromString("kp_end");
+            case GLFW_FKEY_KP_INSERT: return PyUnicode_FromString("kp_insert");
+            case GLFW_FKEY_KP_DELETE: return PyUnicode_FromString("kp_delete");
+            case GLFW_FKEY_KP_BEGIN: return PyUnicode_FromString("kp_begin");
+            case GLFW_FKEY_MEDIA_PLAY: return PyUnicode_FromString("media_play");
+            case GLFW_FKEY_MEDIA_PAUSE: return PyUnicode_FromString("media_pause");
+            case GLFW_FKEY_MEDIA_PLAY_PAUSE: return PyUnicode_FromString("media_play_pause");
+            case GLFW_FKEY_MEDIA_REVERSE: return PyUnicode_FromString("media_reverse");
+            case GLFW_FKEY_MEDIA_STOP: return PyUnicode_FromString("media_stop");
+            case GLFW_FKEY_MEDIA_FAST_FORWARD: return PyUnicode_FromString("media_fast_forward");
+            case GLFW_FKEY_MEDIA_REWIND: return PyUnicode_FromString("media_rewind");
+            case GLFW_FKEY_MEDIA_TRACK_NEXT: return PyUnicode_FromString("media_track_next");
+            case GLFW_FKEY_MEDIA_TRACK_PREVIOUS: return PyUnicode_FromString("media_track_previous");
+            case GLFW_FKEY_MEDIA_RECORD: return PyUnicode_FromString("media_record");
+            case GLFW_FKEY_LOWER_VOLUME: return PyUnicode_FromString("lower_volume");
+            case GLFW_FKEY_RAISE_VOLUME: return PyUnicode_FromString("raise_volume");
+            case GLFW_FKEY_MUTE_VOLUME: return PyUnicode_FromString("mute_volume");
+            case GLFW_FKEY_LEFT_SHIFT: return PyUnicode_FromString("left_shift");
+            case GLFW_FKEY_LEFT_CONTROL: return PyUnicode_FromString("left_control");
+            case GLFW_FKEY_LEFT_ALT: return PyUnicode_FromString("left_alt");
+            case GLFW_FKEY_LEFT_SUPER: return PyUnicode_FromString("left_super");
+            case GLFW_FKEY_LEFT_HYPER: return PyUnicode_FromString("left_hyper");
+            case GLFW_FKEY_LEFT_META: return PyUnicode_FromString("left_meta");
+            case GLFW_FKEY_RIGHT_SHIFT: return PyUnicode_FromString("right_shift");
+            case GLFW_FKEY_RIGHT_CONTROL: return PyUnicode_FromString("right_control");
+            case GLFW_FKEY_RIGHT_ALT: return PyUnicode_FromString("right_alt");
+            case GLFW_FKEY_RIGHT_SUPER: return PyUnicode_FromString("right_super");
+            case GLFW_FKEY_RIGHT_HYPER: return PyUnicode_FromString("right_hyper");
+            case GLFW_FKEY_RIGHT_META: return PyUnicode_FromString("right_meta");
+            case GLFW_FKEY_ISO_LEVEL3_SHIFT: return PyUnicode_FromString("iso_level3_shift");
+            case GLFW_FKEY_ISO_LEVEL5_SHIFT: return PyUnicode_FromString("iso_level5_shift");
+/* end glfw functional key names */
+        }
+        char buf[8] = {0};
+        encode_utf8(key, buf);
+        return PyUnicode_FromString(buf);
+    }
+    if (!glfwGetKeyName) {
+        return PyUnicode_FromFormat("0x%x", native_key);
+    }
+    return Py_BuildValue("z", glfwGetKeyName(key, native_key));
 }
 
-PyObject*
+static PyObject*
 glfw_window_hint(PyObject UNUSED *self, PyObject *args) {
     int key, val;
     if (!PyArg_ParseTuple(args, "ii", &key, &val)) return NULL;
@@ -749,6 +1090,25 @@ get_clipboard_string(PYNOARG) {
     return Py_BuildValue("s", "");
 }
 
+static void
+ring_audio_bell(void) {
+    static monotonic_t last_bell_at = -1;
+    monotonic_t now = monotonic();
+    if (last_bell_at >= 0 && now - last_bell_at <= ms_to_monotonic_t(100ll)) return;
+    last_bell_at = now;
+#ifdef __APPLE__
+    cocoa_system_beep();
+#else
+    play_canberra_sound("bell", "kitty bell");
+#endif
+}
+
+static PyObject*
+ring_bell(PYNOARG) {
+    ring_audio_bell();
+    Py_RETURN_NONE;
+}
+
 static PyObject*
 get_content_scale_for_window(PYNOARG) {
     OSWindow *w = global_state.callback_os_window ? global_state.callback_os_window : global_state.os_windows;
@@ -760,7 +1120,8 @@ get_content_scale_for_window(PYNOARG) {
 static PyObject*
 set_clipboard_string(PyObject UNUSED *self, PyObject *args) {
     char *title;
-    if(!PyArg_ParseTuple(args, "s", &title)) return NULL;
+    Py_ssize_t sz;
+    if(!PyArg_ParseTuple(args, "s#", &title, &sz)) return NULL;
     OSWindow *w = current_os_window();
     if (w) glfwSetClipboardString(w->handle, title);
     Py_RETURN_NONE;
@@ -771,6 +1132,14 @@ toggle_fullscreen(PYNOARG) {
     OSWindow *w = current_os_window();
     if (!w) Py_RETURN_NONE;
     if (toggle_fullscreen_for_os_window(w)) { Py_RETURN_TRUE; }
+    Py_RETURN_FALSE;
+}
+
+static PyObject*
+toggle_maximized(PYNOARG) {
+    OSWindow *w = current_os_window();
+    if (!w) Py_RETURN_NONE;
+    if (toggle_maximized_for_os_window(w)) { Py_RETURN_TRUE; }
     Py_RETURN_FALSE;
 }
 
@@ -787,21 +1156,10 @@ change_os_window_state(PyObject *self UNUSED, PyObject *args) {
 }
 
 void
-ring_audio_bell(OSWindow *w) {
-    static double last_bell_at = -1;
-    double now = monotonic();
-    if (now - last_bell_at <= 0.1) return;
-    last_bell_at = now;
-    if (w->handle) {
-        glfwWindowBell(w->handle);
-    }
-}
-
-void
 request_window_attention(id_type kitty_window_id, bool audio_bell) {
     OSWindow *w = os_window_for_kitty_window(kitty_window_id);
     if (w) {
-        if (audio_bell) ring_audio_bell(w);
+        if (audio_bell) ring_audio_bell();
         if (OPT(window_alert_on_bell)) glfwRequestWindowAttention(w->handle);
         glfwPostEmptyEvent();
     }
@@ -829,31 +1187,17 @@ swap_window_buffers(OSWindow *os_window) {
 }
 
 void
-event_loop_wait(double timeout) {
-    if (timeout < 0) { event_loop_blocking_with_no_timeout = true; glfwWaitEvents(); event_loop_blocking_with_no_timeout = false; }
-    else glfwWaitEventsTimeout(timeout);
-}
-
-void
 wakeup_main_loop() {
     glfwPostEmptyEvent();
 }
 
-void
-mark_os_window_for_close(OSWindow* w, bool yes) {
-    glfwSetWindowShouldClose(w->handle, yes);
-}
-
 bool
 should_os_window_be_rendered(OSWindow* w) {
-    if (glfwGetWindowAttrib(w->handle, GLFW_ICONIFIED)) return false;
-    if (!glfwGetWindowAttrib(w->handle, GLFW_VISIBLE)) return false;
-    return true;
-}
-
-bool
-should_os_window_close(OSWindow* w) {
-    return glfwWindowShouldClose(w->handle) ? true : false;
+    return (
+            glfwGetWindowAttrib(w->handle, GLFW_ICONIFIED) ||
+            !glfwGetWindowAttrib(w->handle, GLFW_VISIBLE) ||
+            glfwGetWindowAttrib(w->handle, GLFW_OCCLUDED)
+       ) ? false : true;
 }
 
 static PyObject*
@@ -866,8 +1210,8 @@ primary_monitor_size(PYNOARG) {
 static PyObject*
 primary_monitor_content_scale(PYNOARG) {
     GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    float xscale, yscale;
-    glfwGetMonitorContentScale(monitor, &xscale, &yscale);
+    float xscale = 1.0, yscale = 1.0;
+    if (monitor) glfwGetMonitorContentScale(monitor, &xscale, &yscale);
     return Py_BuildValue("ff", xscale, yscale);
 }
 
@@ -879,18 +1223,35 @@ x11_display(PYNOARG) {
     Py_RETURN_NONE;
 }
 
+static OSWindow*
+find_os_window(PyObject *os_wid) {
+    id_type os_window_id = PyLong_AsUnsignedLongLong(os_wid);
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        OSWindow *w = global_state.os_windows + i;
+        if (w->id == os_window_id) return w;
+    }
+    return NULL;
+}
+
 static PyObject*
 x11_window_id(PyObject UNUSED *self, PyObject *os_wid) {
-    if (glfwGetX11Window) {
-        id_type os_window_id = PyLong_AsUnsignedLongLong(os_wid);
-        for (size_t i = 0; i < global_state.num_os_windows; i++) {
-            OSWindow *w = global_state.os_windows + i;
-            if (w->id == os_window_id) return Py_BuildValue("l", (long)glfwGetX11Window(w->handle));
-        }
-    }
-    else { PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetX11Window"); return NULL; }
-    PyErr_SetString(PyExc_ValueError, "No OSWindow with the specified id found");
+    OSWindow *w = find_os_window(os_wid);
+    if (!w) { PyErr_SetString(PyExc_ValueError, "No OSWindow with the specified id found"); return NULL; }
+    if (!glfwGetX11Window) { PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetX11Window"); return NULL; }
+    return Py_BuildValue("l", (long)glfwGetX11Window(w->handle));
+}
+
+static PyObject*
+cocoa_window_id(PyObject UNUSED *self, PyObject *os_wid) {
+    OSWindow *w = find_os_window(os_wid);
+    if (!w) { PyErr_SetString(PyExc_ValueError, "No OSWindow with the specified id found"); return NULL; }
+    if (!glfwGetCocoaWindow) { PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetCocoaWindow"); return NULL; }
+#ifdef __APPLE__
+    return Py_BuildValue("l", (long)cocoa_window_number(glfwGetCocoaWindow(w->handle)));
+#else
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_window_id() is only supported on Mac");
     return NULL;
+#endif
 }
 
 static PyObject*
@@ -905,52 +1266,13 @@ get_primary_selection(PYNOARG) {
 static PyObject*
 set_primary_selection(PyObject UNUSED *self, PyObject *args) {
     char *text;
-    if (!PyArg_ParseTuple(args, "s", &text)) return NULL;
+    Py_ssize_t sz;
+    if (!PyArg_ParseTuple(args, "s#", &text, &sz)) return NULL;
     if (glfwSetPrimarySelectionString) {
         OSWindow *w = current_os_window();
         if (w) glfwSetPrimarySelectionString(w->handle, text);
     }
     else log_error("Failed to load glfwSetPrimarySelectionString");
-    Py_RETURN_NONE;
-}
-
-static PyObject*
-os_window_should_close(PyObject UNUSED *self, PyObject *args) {
-    int q = -1001;
-    id_type os_window_id;
-    if (!PyArg_ParseTuple(args, "K|i", &os_window_id, &q)) return NULL;
-    for (size_t i = 0; i < global_state.num_os_windows; i++) {
-        OSWindow *w = global_state.os_windows + i;
-        if (w->id == os_window_id) {
-            if (q == -1001) {
-                if (should_os_window_close(w)) Py_RETURN_TRUE;
-                Py_RETURN_FALSE;
-            }
-            glfwSetWindowShouldClose(w->handle, q ? GLFW_TRUE : GLFW_FALSE);
-            Py_RETURN_NONE;
-        }
-    }
-    PyErr_SetString(PyExc_ValueError, "no such OSWindow");
-    return NULL;
-}
-
-static PyObject*
-os_window_swap_buffers(PyObject UNUSED *self, PyObject *args) {
-    id_type os_window_id;
-    if (!PyArg_ParseTuple(args, "K", &os_window_id)) return NULL;
-    for (size_t i = 0; i < global_state.num_os_windows; i++) {
-        OSWindow *w = global_state.os_windows + i;
-        if (w->id == os_window_id) {
-            swap_window_buffers(w); Py_RETURN_NONE;
-        }
-    }
-    PyErr_SetString(PyExc_ValueError, "no such OSWindow");
-    return NULL;
-}
-
-static PyObject*
-set_smallest_allowed_resize(PyObject *self UNUSED, PyObject *args) {
-    if (!PyArg_ParseTuple(args, "ii", &min_width, &min_height)) return NULL;
     Py_RETURN_NONE;
 }
 
@@ -965,15 +1287,15 @@ set_custom_cursor(PyObject *self UNUSED, PyObject *args) {
     size_t count = MIN((size_t)PyTuple_GET_SIZE(images), arraysz(gimages));
     for (size_t i = 0; i < count; i++) {
         if (!PyArg_ParseTuple(PyTuple_GET_ITEM(images, i), "s#ii", &gimages[i].pixels, &sz, &gimages[i].width, &gimages[i].height)) return NULL;
-        if (gimages[i].width * gimages[i].height * 4 != sz) {
+        if ((Py_ssize_t)gimages[i].width * gimages[i].height * 4 != sz) {
             PyErr_SetString(PyExc_ValueError, "The image data size does not match its width and height");
             return NULL;
         }
     }
 #define CASE(which, dest) {\
     case which: \
-        standard_cursor = glfwCreateCursor(gimages, x, y, count); \
-        if (standard_cursor == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to create custom cursor"); return NULL; } \
+        dest = glfwCreateCursor(gimages, x, y, count); \
+        if (dest == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to create custom cursor"); return NULL; } \
         break; \
 }
     switch(shape) {
@@ -989,50 +1311,128 @@ set_custom_cursor(PyObject *self UNUSED, PyObject *args) {
 
 #ifdef __APPLE__
 void
-get_cocoa_key_equivalent(int key, int mods, unsigned short *cocoa_key, int *cocoa_mods) {
-    glfwGetCocoaKeyEquivalent(key, mods, cocoa_key, cocoa_mods);
+get_cocoa_key_equivalent(uint32_t key, int mods, char *cocoa_key, size_t key_sz, int *cocoa_mods) {
+    memset(cocoa_key, 0, key_sz);
+    uint32_t ans = glfwGetCocoaKeyEquivalent(key, mods, cocoa_mods);
+    if (ans) encode_utf8(ans, cocoa_key);
 }
-#endif
 
-void
-wayland_frame_request_callback(id_type os_window_id) {
+static void
+cocoa_frame_request_callback(GLFWwindow *window) {
     for (size_t i = 0; i < global_state.num_os_windows; i++) {
-        if (global_state.os_windows[i].id == os_window_id) {
-            global_state.os_windows[i].wayland_render_state = RENDER_FRAME_READY;
+        if (global_state.os_windows[i].handle == window) {
+            global_state.os_windows[i].render_state = RENDER_FRAME_READY;
+            global_state.os_windows[i].last_render_frame_received_at = monotonic();
+            request_tick_callback();
             break;
         }
     }
 }
 
 void
-wayland_request_frame_render(OSWindow *w) {
-    glfwRequestWaylandFrameEvent(w->handle, w->id, wayland_frame_request_callback);
-    w->wayland_render_state = RENDER_FRAME_REQUESTED;
+request_frame_render(OSWindow *w) {
+    glfwCocoaRequestRenderFrame(w->handle, cocoa_frame_request_callback);
+    w->render_state = RENDER_FRAME_REQUESTED;
 }
+
+#else
+
+static void
+wayland_frame_request_callback(id_type os_window_id) {
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        if (global_state.os_windows[i].id == os_window_id) {
+            global_state.os_windows[i].render_state = RENDER_FRAME_READY;
+            global_state.os_windows[i].last_render_frame_received_at = monotonic();
+            request_tick_callback();
+            break;
+        }
+    }
+}
+
+void
+request_frame_render(OSWindow *w) {
+    // Some Wayland compositors are too fragile to handle multiple
+    // render frame requests, see https://github.com/kovidgoyal/kitty/issues/2329
+    if (w->render_state != RENDER_FRAME_REQUESTED) {
+        glfwRequestWaylandFrameEvent(w->handle, w->id, wayland_frame_request_callback);
+        w->render_state = RENDER_FRAME_REQUESTED;
+    }
+}
+
+void
+dbus_notification_created_callback(unsigned long long notification_id, uint32_t new_notification_id, void* data UNUSED) {
+    unsigned long new_id = new_notification_id;
+    call_boss(dbus_notification_callback, "OKk", Py_False, notification_id, new_id);
+}
+
+static PyObject*
+dbus_send_notification(PyObject *self UNUSED, PyObject *args) {
+    char *app_name, *icon, *summary, *body, *action_name;
+    int timeout = -1;
+    if (!PyArg_ParseTuple(args, "sssss|i", &app_name, &icon, &summary, &body, &action_name, &timeout)) return NULL;
+    if (!glfwDBusUserNotify) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwDBusUserNotify, did you call glfw_init?");
+        return NULL;
+    }
+    unsigned long long notification_id = glfwDBusUserNotify(app_name, icon, summary, body, action_name, timeout, dbus_notification_created_callback, NULL);
+    return PyLong_FromUnsignedLongLong(notification_id);
+}
+#endif
+
+id_type
+add_main_loop_timer(monotonic_t interval, bool repeats, timer_callback_fun callback, void *callback_data, timer_callback_fun free_callback) {
+    return glfwAddTimer(interval, repeats, callback, callback_data, free_callback);
+}
+
+void
+update_main_loop_timer(id_type timer_id, monotonic_t interval, bool enabled) {
+    glfwUpdateTimer(timer_id, interval, enabled);
+}
+
+void
+remove_main_loop_timer(id_type timer_id) {
+    glfwRemoveTimer(timer_id);
+}
+
+void
+run_main_loop(tick_callback_fun cb, void* cb_data) {
+    glfwRunMainLoop(cb, cb_data);
+}
+
+void
+stop_main_loop(void) {
+#ifdef __APPLE__
+    if (apple_preserve_common_context) glfwDestroyWindow(apple_preserve_common_context);
+    apple_preserve_common_context = NULL;
+#endif
+    glfwStopMainLoop();
+}
+
 
 // Boilerplate {{{
 
 static PyMethodDef module_methods[] = {
     METHODB(set_custom_cursor, METH_VARARGS),
-    METHODB(set_smallest_allowed_resize, METH_VARARGS),
     METHODB(create_os_window, METH_VARARGS),
     METHODB(set_default_window_icon, METH_VARARGS),
     METHODB(get_clipboard_string, METH_NOARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
+    METHODB(ring_bell, METH_NOARGS),
     METHODB(set_clipboard_string, METH_VARARGS),
     METHODB(toggle_fullscreen, METH_NOARGS),
+    METHODB(toggle_maximized, METH_NOARGS),
     METHODB(change_os_window_state, METH_VARARGS),
     METHODB(glfw_window_hint, METH_VARARGS),
-    METHODB(os_window_should_close, METH_VARARGS),
-    METHODB(os_window_swap_buffers, METH_VARARGS),
     METHODB(get_primary_selection, METH_NOARGS),
     METHODB(x11_display, METH_NOARGS),
     METHODB(x11_window_id, METH_O),
     METHODB(set_primary_selection, METH_VARARGS),
-    METHODB(glfw_poll_events, METH_NOARGS),
+#ifndef __APPLE__
+    METHODB(dbus_send_notification, METH_VARARGS),
+#endif
+    METHODB(cocoa_window_id, METH_O),
     {"glfw_init", (PyCFunction)glfw_init, METH_VARARGS, ""},
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},
-    {"glfw_post_empty_event", (PyCFunction)glfw_post_empty_event, METH_NOARGS, ""},
     {"glfw_get_physical_dpi", (PyCFunction)glfw_get_physical_dpi, METH_NOARGS, ""},
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},
     {"glfw_primary_monitor_size", (PyCFunction)primary_monitor_size, METH_NOARGS, ""},
@@ -1043,159 +1443,146 @@ static PyMethodDef module_methods[] = {
 void cleanup_glfw(void) {
     if (logo.pixels) free(logo.pixels);
     logo.pixels = NULL;
+#ifndef __APPLE__
+    release_freetype_render_context(csd_title_render_ctx);
+#endif
 }
 
 // constants {{{
 bool
 init_glfw(PyObject *m) {
     if (PyModule_AddFunctions(m, module_methods) != 0) return false;
-    if (Py_AtExit(cleanup_glfw) != 0) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to register the glfw exit handler");
-        return false;
-    }
+    register_at_exit_cleanup_func(GLFW_CLEANUP_FUNC, cleanup_glfw);
 #define ADDC(n) if(PyModule_AddIntConstant(m, #n, n) != 0) return false;
     ADDC(GLFW_RELEASE);
     ADDC(GLFW_PRESS);
     ADDC(GLFW_REPEAT);
-    ADDC(GLFW_TRUE); ADDC(GLFW_FALSE);
+    ADDC(true); ADDC(false);
     ADDC(GLFW_IBEAM_CURSOR); ADDC(GLFW_HAND_CURSOR); ADDC(GLFW_ARROW_CURSOR);
 
-// --- Keys --------------------------------------------------------------------
-
-// --- The unknown key ---------------------------------------------------------
-    ADDC(GLFW_KEY_UNKNOWN);
-
-// --- Printable keys ----------------------------------------------------------
-    ADDC(GLFW_KEY_SPACE);
-    ADDC(GLFW_KEY_APOSTROPHE);
-    ADDC(GLFW_KEY_COMMA);
-    ADDC(GLFW_KEY_MINUS);
-    ADDC(GLFW_KEY_PERIOD);
-    ADDC(GLFW_KEY_SLASH);
-    ADDC(GLFW_KEY_0);
-    ADDC(GLFW_KEY_1);
-    ADDC(GLFW_KEY_2);
-    ADDC(GLFW_KEY_3);
-    ADDC(GLFW_KEY_4);
-    ADDC(GLFW_KEY_5);
-    ADDC(GLFW_KEY_6);
-    ADDC(GLFW_KEY_7);
-    ADDC(GLFW_KEY_8);
-    ADDC(GLFW_KEY_9);
-    ADDC(GLFW_KEY_SEMICOLON);
-    ADDC(GLFW_KEY_EQUAL);
-    ADDC(GLFW_KEY_A);
-    ADDC(GLFW_KEY_B);
-    ADDC(GLFW_KEY_C);
-    ADDC(GLFW_KEY_D);
-    ADDC(GLFW_KEY_E);
-    ADDC(GLFW_KEY_F);
-    ADDC(GLFW_KEY_G);
-    ADDC(GLFW_KEY_H);
-    ADDC(GLFW_KEY_I);
-    ADDC(GLFW_KEY_J);
-    ADDC(GLFW_KEY_K);
-    ADDC(GLFW_KEY_L);
-    ADDC(GLFW_KEY_M);
-    ADDC(GLFW_KEY_N);
-    ADDC(GLFW_KEY_O);
-    ADDC(GLFW_KEY_P);
-    ADDC(GLFW_KEY_Q);
-    ADDC(GLFW_KEY_R);
-    ADDC(GLFW_KEY_S);
-    ADDC(GLFW_KEY_T);
-    ADDC(GLFW_KEY_U);
-    ADDC(GLFW_KEY_V);
-    ADDC(GLFW_KEY_W);
-    ADDC(GLFW_KEY_X);
-    ADDC(GLFW_KEY_Y);
-    ADDC(GLFW_KEY_Z);
-    ADDC(GLFW_KEY_LEFT_BRACKET);
-    ADDC(GLFW_KEY_BACKSLASH);
-    ADDC(GLFW_KEY_RIGHT_BRACKET);
-    ADDC(GLFW_KEY_GRAVE_ACCENT);
-    ADDC(GLFW_KEY_WORLD_1);
-    ADDC(GLFW_KEY_WORLD_2);
-
-// --- Function keys -----------------------------------------------------------
-    ADDC(GLFW_KEY_ESCAPE);
-    ADDC(GLFW_KEY_ENTER);
-    ADDC(GLFW_KEY_TAB);
-    ADDC(GLFW_KEY_BACKSPACE);
-    ADDC(GLFW_KEY_INSERT);
-    ADDC(GLFW_KEY_DELETE);
-    ADDC(GLFW_KEY_RIGHT);
-    ADDC(GLFW_KEY_LEFT);
-    ADDC(GLFW_KEY_DOWN);
-    ADDC(GLFW_KEY_UP);
-    ADDC(GLFW_KEY_PAGE_UP);
-    ADDC(GLFW_KEY_PAGE_DOWN);
-    ADDC(GLFW_KEY_HOME);
-    ADDC(GLFW_KEY_END);
-    ADDC(GLFW_KEY_CAPS_LOCK);
-    ADDC(GLFW_KEY_SCROLL_LOCK);
-    ADDC(GLFW_KEY_NUM_LOCK);
-    ADDC(GLFW_KEY_PRINT_SCREEN);
-    ADDC(GLFW_KEY_PAUSE);
-    ADDC(GLFW_KEY_F1);
-    ADDC(GLFW_KEY_F2);
-    ADDC(GLFW_KEY_F3);
-    ADDC(GLFW_KEY_F4);
-    ADDC(GLFW_KEY_F5);
-    ADDC(GLFW_KEY_F6);
-    ADDC(GLFW_KEY_F7);
-    ADDC(GLFW_KEY_F8);
-    ADDC(GLFW_KEY_F9);
-    ADDC(GLFW_KEY_F10);
-    ADDC(GLFW_KEY_F11);
-    ADDC(GLFW_KEY_F12);
-    ADDC(GLFW_KEY_F13);
-    ADDC(GLFW_KEY_F14);
-    ADDC(GLFW_KEY_F15);
-    ADDC(GLFW_KEY_F16);
-    ADDC(GLFW_KEY_F17);
-    ADDC(GLFW_KEY_F18);
-    ADDC(GLFW_KEY_F19);
-    ADDC(GLFW_KEY_F20);
-    ADDC(GLFW_KEY_F21);
-    ADDC(GLFW_KEY_F22);
-    ADDC(GLFW_KEY_F23);
-    ADDC(GLFW_KEY_F24);
-    ADDC(GLFW_KEY_F25);
-    ADDC(GLFW_KEY_KP_0);
-    ADDC(GLFW_KEY_KP_1);
-    ADDC(GLFW_KEY_KP_2);
-    ADDC(GLFW_KEY_KP_3);
-    ADDC(GLFW_KEY_KP_4);
-    ADDC(GLFW_KEY_KP_5);
-    ADDC(GLFW_KEY_KP_6);
-    ADDC(GLFW_KEY_KP_7);
-    ADDC(GLFW_KEY_KP_8);
-    ADDC(GLFW_KEY_KP_9);
-    ADDC(GLFW_KEY_KP_DECIMAL);
-    ADDC(GLFW_KEY_KP_DIVIDE);
-    ADDC(GLFW_KEY_KP_MULTIPLY);
-    ADDC(GLFW_KEY_KP_SUBTRACT);
-    ADDC(GLFW_KEY_KP_ADD);
-    ADDC(GLFW_KEY_KP_ENTER);
-    ADDC(GLFW_KEY_KP_EQUAL);
-    ADDC(GLFW_KEY_LEFT_SHIFT);
-    ADDC(GLFW_KEY_LEFT_CONTROL);
-    ADDC(GLFW_KEY_LEFT_ALT);
-    ADDC(GLFW_KEY_LEFT_SUPER);
-    ADDC(GLFW_KEY_RIGHT_SHIFT);
-    ADDC(GLFW_KEY_RIGHT_CONTROL);
-    ADDC(GLFW_KEY_RIGHT_ALT);
-    ADDC(GLFW_KEY_RIGHT_SUPER);
-    ADDC(GLFW_KEY_MENU);
-    ADDC(GLFW_KEY_LAST);
-
+    /* start glfw functional keys (auto generated by gen-key-constants.py do not edit) */
+    ADDC(GLFW_FKEY_ESCAPE);
+    ADDC(GLFW_FKEY_ENTER);
+    ADDC(GLFW_FKEY_TAB);
+    ADDC(GLFW_FKEY_BACKSPACE);
+    ADDC(GLFW_FKEY_INSERT);
+    ADDC(GLFW_FKEY_DELETE);
+    ADDC(GLFW_FKEY_LEFT);
+    ADDC(GLFW_FKEY_RIGHT);
+    ADDC(GLFW_FKEY_UP);
+    ADDC(GLFW_FKEY_DOWN);
+    ADDC(GLFW_FKEY_PAGE_UP);
+    ADDC(GLFW_FKEY_PAGE_DOWN);
+    ADDC(GLFW_FKEY_HOME);
+    ADDC(GLFW_FKEY_END);
+    ADDC(GLFW_FKEY_CAPS_LOCK);
+    ADDC(GLFW_FKEY_SCROLL_LOCK);
+    ADDC(GLFW_FKEY_NUM_LOCK);
+    ADDC(GLFW_FKEY_PRINT_SCREEN);
+    ADDC(GLFW_FKEY_PAUSE);
+    ADDC(GLFW_FKEY_MENU);
+    ADDC(GLFW_FKEY_F1);
+    ADDC(GLFW_FKEY_F2);
+    ADDC(GLFW_FKEY_F3);
+    ADDC(GLFW_FKEY_F4);
+    ADDC(GLFW_FKEY_F5);
+    ADDC(GLFW_FKEY_F6);
+    ADDC(GLFW_FKEY_F7);
+    ADDC(GLFW_FKEY_F8);
+    ADDC(GLFW_FKEY_F9);
+    ADDC(GLFW_FKEY_F10);
+    ADDC(GLFW_FKEY_F11);
+    ADDC(GLFW_FKEY_F12);
+    ADDC(GLFW_FKEY_F13);
+    ADDC(GLFW_FKEY_F14);
+    ADDC(GLFW_FKEY_F15);
+    ADDC(GLFW_FKEY_F16);
+    ADDC(GLFW_FKEY_F17);
+    ADDC(GLFW_FKEY_F18);
+    ADDC(GLFW_FKEY_F19);
+    ADDC(GLFW_FKEY_F20);
+    ADDC(GLFW_FKEY_F21);
+    ADDC(GLFW_FKEY_F22);
+    ADDC(GLFW_FKEY_F23);
+    ADDC(GLFW_FKEY_F24);
+    ADDC(GLFW_FKEY_F25);
+    ADDC(GLFW_FKEY_F26);
+    ADDC(GLFW_FKEY_F27);
+    ADDC(GLFW_FKEY_F28);
+    ADDC(GLFW_FKEY_F29);
+    ADDC(GLFW_FKEY_F30);
+    ADDC(GLFW_FKEY_F31);
+    ADDC(GLFW_FKEY_F32);
+    ADDC(GLFW_FKEY_F33);
+    ADDC(GLFW_FKEY_F34);
+    ADDC(GLFW_FKEY_F35);
+    ADDC(GLFW_FKEY_KP_0);
+    ADDC(GLFW_FKEY_KP_1);
+    ADDC(GLFW_FKEY_KP_2);
+    ADDC(GLFW_FKEY_KP_3);
+    ADDC(GLFW_FKEY_KP_4);
+    ADDC(GLFW_FKEY_KP_5);
+    ADDC(GLFW_FKEY_KP_6);
+    ADDC(GLFW_FKEY_KP_7);
+    ADDC(GLFW_FKEY_KP_8);
+    ADDC(GLFW_FKEY_KP_9);
+    ADDC(GLFW_FKEY_KP_DECIMAL);
+    ADDC(GLFW_FKEY_KP_DIVIDE);
+    ADDC(GLFW_FKEY_KP_MULTIPLY);
+    ADDC(GLFW_FKEY_KP_SUBTRACT);
+    ADDC(GLFW_FKEY_KP_ADD);
+    ADDC(GLFW_FKEY_KP_ENTER);
+    ADDC(GLFW_FKEY_KP_EQUAL);
+    ADDC(GLFW_FKEY_KP_SEPARATOR);
+    ADDC(GLFW_FKEY_KP_LEFT);
+    ADDC(GLFW_FKEY_KP_RIGHT);
+    ADDC(GLFW_FKEY_KP_UP);
+    ADDC(GLFW_FKEY_KP_DOWN);
+    ADDC(GLFW_FKEY_KP_PAGE_UP);
+    ADDC(GLFW_FKEY_KP_PAGE_DOWN);
+    ADDC(GLFW_FKEY_KP_HOME);
+    ADDC(GLFW_FKEY_KP_END);
+    ADDC(GLFW_FKEY_KP_INSERT);
+    ADDC(GLFW_FKEY_KP_DELETE);
+    ADDC(GLFW_FKEY_KP_BEGIN);
+    ADDC(GLFW_FKEY_MEDIA_PLAY);
+    ADDC(GLFW_FKEY_MEDIA_PAUSE);
+    ADDC(GLFW_FKEY_MEDIA_PLAY_PAUSE);
+    ADDC(GLFW_FKEY_MEDIA_REVERSE);
+    ADDC(GLFW_FKEY_MEDIA_STOP);
+    ADDC(GLFW_FKEY_MEDIA_FAST_FORWARD);
+    ADDC(GLFW_FKEY_MEDIA_REWIND);
+    ADDC(GLFW_FKEY_MEDIA_TRACK_NEXT);
+    ADDC(GLFW_FKEY_MEDIA_TRACK_PREVIOUS);
+    ADDC(GLFW_FKEY_MEDIA_RECORD);
+    ADDC(GLFW_FKEY_LOWER_VOLUME);
+    ADDC(GLFW_FKEY_RAISE_VOLUME);
+    ADDC(GLFW_FKEY_MUTE_VOLUME);
+    ADDC(GLFW_FKEY_LEFT_SHIFT);
+    ADDC(GLFW_FKEY_LEFT_CONTROL);
+    ADDC(GLFW_FKEY_LEFT_ALT);
+    ADDC(GLFW_FKEY_LEFT_SUPER);
+    ADDC(GLFW_FKEY_LEFT_HYPER);
+    ADDC(GLFW_FKEY_LEFT_META);
+    ADDC(GLFW_FKEY_RIGHT_SHIFT);
+    ADDC(GLFW_FKEY_RIGHT_CONTROL);
+    ADDC(GLFW_FKEY_RIGHT_ALT);
+    ADDC(GLFW_FKEY_RIGHT_SUPER);
+    ADDC(GLFW_FKEY_RIGHT_HYPER);
+    ADDC(GLFW_FKEY_RIGHT_META);
+    ADDC(GLFW_FKEY_ISO_LEVEL3_SHIFT);
+    ADDC(GLFW_FKEY_ISO_LEVEL5_SHIFT);
+/* end glfw functional keys */
 // --- Modifiers ---------------------------------------------------------------
     ADDC(GLFW_MOD_SHIFT);
     ADDC(GLFW_MOD_CONTROL);
     ADDC(GLFW_MOD_ALT);
     ADDC(GLFW_MOD_SUPER);
+    ADDC(GLFW_MOD_HYPER);
+    ADDC(GLFW_MOD_META);
     ADDC(GLFW_MOD_KITTY);
+    ADDC(GLFW_MOD_CAPS_LOCK);
+    ADDC(GLFW_MOD_NUM_LOCK);
 
 // --- Mouse -------------------------------------------------------------------
     ADDC(GLFW_MOUSE_BUTTON_1);
@@ -1277,7 +1664,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_CONTEXT_REVISION);
     ADDC(GLFW_CONTEXT_ROBUSTNESS);
     ADDC(GLFW_OPENGL_FORWARD_COMPAT);
-    ADDC(GLFW_OPENGL_DEBUG_CONTEXT);
+    ADDC(GLFW_CONTEXT_DEBUG);
     ADDC(GLFW_OPENGL_PROFILE);
 
 // ---

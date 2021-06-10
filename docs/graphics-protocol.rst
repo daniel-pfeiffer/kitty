@@ -28,17 +28,25 @@ alpha-blending and text over graphics.
     :alt: Demo of graphics rendering in kitty
     :align: center
 
-Some programs that use the kitty graphics protocol:
+Some programs and libraries that use the kitty graphics protocol:
 
- * `termpdf <https://github.com/dsanson/termpdf>`_ - a terminal PDF/DJVU/CBR viewer
+ * `termpdf.py <https://github.com/dsanson/termpdf.py>`_ - a terminal PDF/DJVU/CBR viewer
  * `ranger <https://github.com/ranger/ranger>`_ - a terminal file manager, with
    image previews, see this `PR <https://github.com/ranger/ranger/pull/1077>`_
  * :doc:`kitty-diff <kittens/diff>` - a side-by-side terminal diff program with support for images
+ * `pixcat <https://github.com/mirukana/pixcat>`_ - a third party CLI and python library that wraps the graphics protocol
  * `neofetch <https://github.com/dylanaraps/neofetch>`_ - A command line system
    information tool
+ * `viu <https://github.com/atanunq/viu>`_ - a terminal image viewer
+ * `glkitty <https://github.com/michaeljclark/glkitty>`_ - C library to draw OpenGL shaders in the terminal with a glgears demo
+ * `ctx.graphics <https://ctx.graphics/>`_ - Library for drawing graphics
+ * `timg <https://github.com/hzeller/timg>`_ - a terminal image and video viewer
+ * `notcurses <https://github.com/dankamongmen/notcurses>`_ - C library for terminal graphics with bindings for C++, Rust and Python
+ * `rasterm <https://github.com/BourgeoisBear/rasterm>`_  - Go library to display images in the the terminal
 
 
 .. contents::
+   :local:
 
 
 Getting the window size
@@ -53,27 +61,34 @@ In C:
 
 .. code-block:: c
 
-    struct ttysize ts;
-    ioctl(0, TIOCGWINSZ, &ts);
-    printf("number of columns: %i, number of rows: %i, screen width: %i, screen height: %i\n", sz.ws_col, sz.ws_row, sz.ws_xpixel, sz.ws_ypixel);
+    #include <stdio.h>
+    #include <sys/ioctl.h>
+
+    int main(int argc, char **argv) {
+        struct winsize sz;
+        ioctl(0, TIOCGWINSZ, &sz);
+        printf("number of rows: %i, number of columns: %i, screen width: %i, screen height: %i\n", sz.ws_row, sz.ws_col, sz.ws_xpixel, sz.ws_ypixel);
+        return 0;
+    }
 
 In Python:
 
 .. code-block:: python
 
-    import array, fcntl, termios
+    import array, fcntl, sys, termios
     buf = array.array('H', [0, 0, 0, 0])
     fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, buf)
-    print('number of columns: {}, number of rows: {}, screen width: {}, screen height: {}'.format(*buf))
+    print('number of rows: {}, number of columns: {}, screen width: {}, screen height: {}'.format(*buf))
 
 Note that some terminals return ``0`` for the width and height values. Such
 terminals should be modified to return the correct values.  Examples of
 terminals that return correct values: ``kitty, xterm``
 
 You can also use the *CSI t* escape code to get the screen size. Send
-``<ESC>[14t`` to *stdout* and kitty will reply on *stdin* with
-``<ESC>[4;<height>;<width>t`` where *height* and *width* are the window size in
-pixels. This escape code is supported in many terminals, not just kitty.
+``<ESC>[14t`` to ``STDOUT`` and kitty will reply on ``STDIN`` with
+``<ESC>[4;<height>;<width>t`` where ``height`` and ``width`` are the window
+size in pixels. This escape code is supported in many terminals, not just
+kitty.
 
 A minimal example
 ------------------
@@ -107,7 +122,8 @@ features of the graphics protocol:
          sys.stdout.flush()
          cmd.clear()
 
-   write_chunked({'a': 'T', 'f': 100}, open(sys.argv[-1], 'rb').read())
+   with open(sys.argv[-1], 'rb') as f:
+      write_chunked({'a': 'T', 'f': 100}, f.read())
 
 
 Save this script as :file:`png.py`, then you can use it to display any PNG
@@ -133,6 +149,8 @@ The meaning of the payload is interpreted based on the control data.
 
 The first step is to transmit the actual image data.
 
+.. _transferring_pixel_data:
+
 Transferring pixel data
 --------------------------
 
@@ -152,9 +170,10 @@ of transmitting paletted images.
 RGB and RGBA data
 ~~~~~~~~~~~~~~~~~~~
 
-In these formats the pixel data is stored directly as 3 or 4 bytes per pixel, respectively.
-When specifying images in this format, the image dimensions **must** be sent in the control data.
-For example::
+In these formats the pixel data is stored directly as 3 or 4 bytes per pixel,
+respectively. The colors in the data **must** be in the *sRGB color space*.  When
+specifying images in this format, the image dimensions **must** be sent in the
+control data. For example::
 
     <ESC>_Gf=24,s=10,v=20;<payload><ESC>\
 
@@ -178,16 +197,17 @@ compression, then you must provide the ``S`` key with the size of the PNG data.
 Compression
 ~~~~~~~~~~~~~
 
-The client can send compressed image data to the terminal emulator, by specifying the
-``o`` key. Currently, only zlib based deflate compression is supported, which is specified using
-``o=z``. For example::
+The client can send compressed image data to the terminal emulator, by
+specifying the ``o`` key. Currently, only :rfc:`1950` ZLIB based deflate
+compression is supported, which is specified using ``o=z``. For example::
 
     <ESC>_Gf=24,s=10,v=20,o=z;<payload><ESC>\
 
 This is the same as the example from the RGB data section, except that the
-payload is now compressed using deflate. The terminal emulator will decompress
-it before rendering. You can specify compression for any format. The terminal
-emulator will decompress before interpreting the pixel data.
+payload is now compressed using deflate (this occurs prior to base64-encoding).
+The terminal emulator will decompress it before rendering. You can specify
+compression for any format. The terminal emulator will decompress before
+interpreting the pixel data.
 
 
 The transmission medium
@@ -201,9 +221,17 @@ Value of `t`          Meaning
 ==================    ============
 ``d``                 Direct (the data is transmitted within the escape code itself)
 ``f``                 A simple file
-``t``                 A temporary file, the terminal emulator will delete the file after reading the pixel data
-``s``                 A `POSIX shared memory object <http://man7.org/linux/man-pages/man7/shm_overview.7.html>`_.
-                      The terminal emulator will delete it after reading the pixel data
+``t``                 A temporary file, the terminal emulator will delete the file after reading the pixel data. For security reasons
+                      the terminal emulator should only delete the file if it
+                      is in a known temporary directory, such as :file:`/tmp`,
+                      :file:`/dev/shm`, :file:`TMPDIR env var if present` and any platform
+                      specific temporary directories.
+``s``                 A *shared memory object*, which on POSIX systems is a `POSIX shared memory object
+                      <http://man7.org/linux/man-pages/man7/shm_overview.7.html>`_ and on Windows is a
+                      `Named shared memory object <https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory>`_.
+                      The terminal emulator must read the data from the memory
+                      object and then unlink and close it on POSIX and just
+                      close it on Windows.
 ==================    ============
 
 Local client
@@ -249,13 +277,16 @@ sequence of escape codes to the terminal emulator::
     <ESC>_Gm=0;<encoded pixel data last chunk><ESC>\
 
 Note that only the first escape code needs to have the full set of control
-codes such as width, height, format etc. Subsequent chunks must have
+codes such as width, height, format etc. Subsequent chunks **must** have
 only the ``m`` key. The client **must** finish sending all chunks for a single image
-before sending any other graphics related escape codes.
+before sending any other graphics related escape codes. Note that the cursor
+position used to display the image **must** be the position when the final chunk is
+received. Finally, terminals must not display anything, until the entire sequence is
+received and validated.
 
 
-Detecting available transmission mediums
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Querying support and available transmission mediums
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Since a client has no a-priori knowledge of whether it shares a filesystem/shared memory
 with the terminal emulator, it can send an id with the control data, using the ``i`` key
@@ -281,17 +312,39 @@ use the *query action*, set ``a=q``. Then the terminal emulator will try to load
 the image and respond with either OK or an error, as above, but it will not
 replace an existing image with the same id, nor will it store the image.
 
+While as of May 2020, kitty is the only terminal emulator to support this
+graphics protocol, we intend that any terminal emulator that wishes to support
+it can. To check if a terminal emulator supports the graphics protocol the best way
+is to send the above *query action* followed by a request for the
+`primary device attributes <https://vt100.net/docs/vt510-rm/DA1.html>`_. If you
+get back an answer for the device attributes without getting back an answer for
+the *query action* the terminal emulator does not support the graphics
+protocol.
+
+This means that terminal emulators that support the graphics protocol, **must**
+reply to *query actions* immediately without processing other input. Most
+terminal emulators handle input in a FIFO manner, anyway.
+
+So for example, you could send::
+
+      <ESC>_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA<ESC>\<ESC>[c
+
+If you get back a response to the graphics query, the terminal emulator supports
+the protocol, if you get back a response to the device attributes query without
+a response to the graphics query, it does not.
+
 
 Display images on screen
 -----------------------------
 
 Every transmitted image can be displayed an arbitrary number of times on the
 screen, in different locations, using different parts of the source image, as
-needed. You can either simultaneously transmit and display an image using the
-action ``a=T``, or first transmit the image with a id, such as ``i=10`` and then display
-it with ``a=p,i=10`` which will display the previously transmitted image at the current
-cursor position. When specifying an image id, the terminal emulator will reply with an
-acknowledgement code, which will be either::
+needed. Each such display of an image is called a *placement*.  You can either
+simultaneously transmit and display an image using the action ``a=T``, or first
+transmit the image with a id, such as ``i=10`` and then display it with
+``a=p,i=10`` which will display the previously transmitted image at the current
+cursor position. When specifying an image id, the terminal emulator will reply
+to the placement request with an acknowledgement code, which will be either::
 
     <ESC>_Gi=<id>;OK<ESC>\
 
@@ -303,6 +356,24 @@ when the image with the specified id was not found. This is similar to the
 scheme described above for querying available transmission media, except that
 here we are querying if the image with the specified id is available or needs to
 be re-transmitted.
+
+Since there can be many placements per image, you can also give placements an
+id. To do so add the ``p`` key with a number between ``1`` and ``4294967295``.
+When you specify a placement id, it will be added to the acknowledgement code
+above. Every placement is uniquely identified by the pair of the ``image id``
+and the ``placement id``. If you specify a placement id for an image that does
+not have an id, it will be ignored. An example response::
+
+    <ESC>_Gi=<image id>,p=<placement id>;OK<ESC>\
+
+If you send two placements with the same ``image id`` and ``placement id`` the
+second one will replace the first. This can be used to resize or move
+placements around the screen, without flicker.
+
+
+.. versionadded:: 0.19.3
+   Support for specifying placement ids (see :doc:`kittens/query_terminal` to query kitty version)
+
 
 Controlling displayed image layout
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -326,7 +397,22 @@ Finally, you can specify the image *z-index*, i.e. the vertical stacking order. 
 placed in the same location with different z-index values will be blended if
 they are semi-transparent. You can specify z-index values using the ``z`` key.
 Negative z-index values mean that the images will be drawn under the text. This
-allows rendering of text on top of images.
+allows rendering of text on top of images. Negative z-index values below
+INT32_MIN/2 (-1,073,741,824) will be drawn under cells with non-default background
+colors.
+
+.. note:: After placing an image on the screen the cursor must be moved to the
+   right by the number of cols in the image placement rectangle and down by the
+   number of rows in the image placement rectangle. If either of these cause
+   the cursor to leave either the screen or the scroll area, the exact
+   positioning of the cursor is undefined, and up to implementations.
+   The client can ask the terminal emulator to not move the cursor at all
+   by specifying ``C=1`` in the command, which sets the cursor movement policy
+   to no movement for placing the current image.
+
+.. versionadded:: 0.20.0
+   Support for the C=1 cursor movement policy
+
 
 Deleting images
 ---------------------
@@ -344,33 +430,218 @@ scrollback buffer. The values of the ``x`` and ``y`` keys are the same as cursor
 =================    ============
 Value of ``d``       Meaning
 =================    ============
-``a`` or ``A``       Delete all images visible on screen
-``i`` or ``I``       Delete all images with the specified id, specified using the ``i`` key.
-``c`` or ``C``       Delete all images that intersect with the current cursor position.
-``p`` or ``P``       Delete all images that intersect a specific cell, the cell is specified using the ``x`` and ``y`` keys
-``q`` or ``Q``       Delete all images that intersect a specific cell having a specific z-index. The cell and z-index is specified using the ``x``, ``y`` and ``z`` keys.
-``x`` or ``X``       Delete all images that intersect the specified column, specified using the ``x`` key.
-``y`` or ``Y``       Delete all images that intersect the specified row, specified using the ``y`` key.
-``z`` or ``Z``       Delete all images that have the specified z-index, specified using the ``z`` key.
+``a`` or ``A``       Delete all placements visible on screen
+``i`` or ``I``       Delete all images with the specified id, specified using the ``i`` key. If you specify a ``p`` key for the placement                      id as well, then only the placement with the specified image id and placement id will be deleted.
+``n`` or ``N``       Delete newest image with the specified number, specified using the ``I`` key. If you specify a ``p`` key for the
+                     placement id as well, then only the placement with the specified number and placement id will be deleted.
+``c`` or ``C``       Delete all placements that intersect with the current cursor position.
+``f`` or ``F``       Delete animation frames.
+``p`` or ``P``       Delete all placements that intersect a specific cell, the cell is specified using the ``x`` and ``y`` keys
+``q`` or ``Q``       Delete all placements that intersect a specific cell having a specific z-index. The cell and z-index is specified using the ``x``, ``y`` and ``z`` keys.
+``x`` or ``X``       Delete all placements that intersect the specified column, specified using the ``x`` key.
+``y`` or ``Y``       Delete all placements that intersect the specified row, specified using the ``y`` key.
+``z`` or ``Z``       Delete all placements that have the specified z-index, specified using the ``z`` key.
 =================    ============
 
 
+Note when all placements for an image have been deleted, the image is also
+deleted, if the capital letter form above is specified. Also, when the terminal
+is running out of quota space for new images, existing images without
+placements will be preferentially deleted.
 
 Some examples::
 
-    <ESC>_Ga=d<ESC>\         # delete all visible images
-    <ESC>_Ga=d,i=10<ESC>\    # delete the image with id=10
-    <ESC>_Ga=Z,z=-1<ESC>\    # delete the images with z-index -1, also freeing up image data
-    <ESC>_Ga=P,x=3,y=4<ESC>\ # delete all images that intersect the cell at (3, 4)
+    <ESC>_Ga=d<ESC>\              # delete all visible placements
+    <ESC>_Ga=d,d=i,i=10<ESC>\     # delete the image with id=10, without freeing data
+    <ESC>_Ga=d,d=i,i=10,p=7<ESC>\ # delete the image with id=10 and placement id=7, without freeing data
+    <ESC>_Ga=d,d=Z,z=-1<ESC>\     # delete the placements with z-index -1, also freeing up image data
+    <ESC>_Ga=d,d=p,x=3,y=4<ESC>\  # delete all placements that intersect the cell at (3, 4), without freeing data
+
+
+Suppressing responses from the terminal
+-------------------------------------------
+
+If you are using the graphics protocol from a limited client, such as a shell
+script, it might be useful to avoid having to process responses from the
+terminal. For this, you can use the ``q`` key. Set it to ``1`` to suppress
+``OK`` responses and to ``2`` to suppress failure responses.
+
+.. versionadded:: 0.19.3
+   The ability to suppress responses (see :doc:`kittens/query_terminal` to query kitty version)
+
+
+Requesting image ids from the terminal
+-------------------------------------------
+
+If you are writing a program that is going to share the screen with other
+programs and you still want to use image ids, it is not possible to know
+what image ids are free to use. In this case, instead of using the ``i``
+key to specify an image id use the ``I`` key to specify an image number
+instead. These numbers are not unique.
+When creating a new image, even if an existing image has the same number a new
+one is created. And the terminal will reply with the id of the newly created
+image. For example, when creating an image with ``I=13``, the terminal will
+send the response::
+
+    <ESC>_Gi=99,I=13;OK<ESC>\
+
+Here, the value of ``i`` is the id for the newly created image and the value of
+``I`` is the same as was sent in the creation command.
+
+All future commands that refer to images using the image number, such as
+creating placements or deleting images, will act on only the newest image with
+that number. This allows the client program to send a bunch of commands dealing
+with an image by image number without waiting for a response from the terminal
+with the image id. Once such a response is received, the client program should
+use the ``i`` key with the image id for all future communication.
+
+.. note:: Specifying both ``i`` and ``I`` keys in any command is an error. The
+   terminal must reply with an EINVAL error message, unless silenced.
+
+.. versionadded:: 0.19.3
+   The ability to use image numbers (see :doc:`kittens/query_terminal` to query kitty version)
+
+
+.. _animation_protocol:
+
+Animation
+-------------------------------------------
+
+.. versionadded:: 0.20.0
+   Animation support (see :doc:`kittens/query_terminal` to query kitty version)
+
+When designing support for animation, the two main considerations were:
+
+#. There should be a way for both client and terminal driven animations.
+   Since there is unknown and variable latency between client and terminal,
+   especially over SSH, client driven animations are not sufficient.
+
+#. Animations often consist of small changes from one frame to the next, the
+   protocol should thus allow transmitting these deltas for efficiency and
+   performance reasons.
+
+Animation support is added to the protocol by adding two new modes for the
+``a`` (action) key. A ``f`` mode for transmitting frame data and an ``a`` mode
+for controlling the animation of an image. Animation proceeds in two steps,
+first a normal image is created as described earlier. Then animation frames are
+added to the image to make it into an animation. Since every animation is
+associated with a single image, all animation escape codes must specify either
+the ``i`` or ``I`` keys to identify the image being operated on.
+
+
+Transferring animation frame data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Transferring animation frame data is very similar to
+:ref:`transferring_pixel_data` above. The main difference is that the image
+the frame belongs to must be specified and it is possible to transmit data for
+only part of a frame, declaring the rest of the frame to be filled in by data
+from a previous frame, or left blank. To transfer frame data the ``a=f``
+key must be used in all escape codes.
+
+First, to transfer a simple frame that has data for the full image area, the
+escape codes used are exactly the same as for transferring image data, with the
+addition of: ``a=f,i=<image id>`` or ``a=f,I=<image number>``.
+
+If the frame has data for only a part of the image, you can specify the
+rectangle for it using the ``x, y, s, v`` keys, for example::
+
+    x=10,y=5,s=100,v=200  # A 100x200 rectangle with its top left corner at (10, 5)
+
+Frames are created by composing the transmitted data onto a background canvas.
+This canvas can be either a single color, or the pixels from a previous frame.
+The composition can be of two types, either a simple replacement (``X=1``) key
+or a full alpha blend (the default).
+
+To use a background color for the canvas, specify the ``Y`` key as a 32-bit
+RGBA color. For example::
+
+    Y=4278190335 # 0xff0000ff opaque red
+    Y=16711816   # 0x00ff0088 translucent green (alpha=0.53)
+
+The default background color when none is specified is ``0`` i.e. a black,
+transparent pixel.
+
+To use the data from a previous frame, specify the ``c`` key which is a 1-based
+frame number. Thus ``c=1`` refers to the root frame (the base image data),
+``c=2`` refers to the second frame and so on.
+
+If the frame is composed of multiple rectangular blocks, these can be expressed
+by using the ``r`` key. When specifying the ``r`` key the data for an existing
+frame is edited. The same composition operation as above happens, but now the
+background canvas is the existing frame itself. ``r`` is a 1-based index, so
+``r=1`` is the root frame (base image data), ``r=2`` is the second frame and so
+on.
+
+Finally, while transferring frame data, the frame *gap* can also be specified
+using the ``z`` key. The gap is the number of milliseconds to wait before
+displaying the next frame when the animation is running. A value of ``z=0`` is
+ignored, ``z=positive number`` sets the gap to the specified number of
+milliseconds and ``z=negative number`` creates a *gapless* frame. Gapless
+frames are not displayed to the user since they are instantly skipped over,
+however they can be useful as the base data for subsequent frames. For example,
+for an animation where the background remains the same and a small object or two
+move.
+
+Controlling animations
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Clients can control animations by using the ``a=a`` key in the escape code sent
+to the terminal.
+
+The simplest is client driven animations, where the client transmits the frame
+data and the also instructs the terminal to make a particular frame the current
+frame.  To change the current frame, use the ``c`` key::
+
+    <ESC>_Ga=a,i=3,c=7<ESC>\
+
+This will make the seventh frame in the image with id ``3`` the current frame.
+
+However, client driven animations can be sub-optimal, since the latency between
+the client and terminal is unknown and variable especially over the network.
+Also they require the client to remain running for the lifetime of the
+animation, which is not desirable for cat like utilities.
+
+Terminal driven animations are achieved by the client specifying *gaps* (time
+in milliseconds) between frames and instructing the terminal to stop or start
+the animation.
+
+The animation state is controlled by the ``s`` key. ``s=1`` stops the
+animation. ``s=2`` runs the animation, but in *loading* mode, in this mode when
+reaching the last frame, instead of looping, the terminal will wait for the
+arrival of more frames. ``s=3`` runs the animation normally, after the last
+frame, the terminal loops back to the first frame. The number of loops can be
+controlled by the ``v`` key. ``v=0`` is ignored, ``v=1`` is loop infinitely,
+and any other positive number is loop ``number - 1`` times. Note that stopping
+the animation resets the loop counter.
+
+Finally, the *gap* for frames can be set using the ``z`` key. This can be
+specified either when the frame is created as part of the transmit escape code
+or separately using the animation control escape code. The *gap* is the time in
+milliseconds to wait before displaying the next frame in the animation.
+For example::
+
+    <ESC>_Ga=a,i=7,r=3,z=48<ESC>\
+
+This sets the gap for the third frame of the image with id ``7`` to ``48``
+milliseconds. Note that *gapless* frames are not displayed to the user since
+the next frame comes immediately, however they can be useful to store base data
+for subsequent frames, such as in an animation with an object moving against a
+static background.
+
+In particular, the first frame or *root frame* is created with the base image
+data and has no gap, so its gap must be set using this control code.
 
 Image persistence and storage quotas
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-----------------------------------------
 
 In order to avoid *Denial-of-Service* attacks, terminal emulators should have a
 maximum storage quota for image data. It should allow at least a few full
 screen images.  For example the quota in kitty is 320MB per buffer. When adding
 a new image, if the total size exceeds the quota, the terminal emulator should
-delete older images to make space for the new one.
+delete older images to make space for the new one. In kitty, for animations,
+the additional frame data is stored on disk and has a separate, larger quota of
+five times the base quota.
 
 
 Control data reference
@@ -383,7 +654,13 @@ take, and the default value they take when missing. All integers are 32-bit.
 Key      Value                 Default    Description
 =======  ====================  =========  =================
 ``a``    Single character.     ``t``      The overall action this graphics command is performing.
-         ``(t, T, q, p, d)``
+         ``(t, T, q, p, d)``              ``t`` - transmit data, ``T`` - transmit data and display image,
+                                          ``q`` - query terminal, ``p`` - put (display) previous transmitted image,
+                                          ``d`` - delete image, ``f`` - transmit data for animation frames,
+                                          ``a`` - control animation
+
+``q``    ``0, 1, 2``           ``0``      Suppress responses from the terminal to this graphics command.
+
 **Keys for image transmission**
 -----------------------------------------------------------
 ``f``    Positive integer.     ``32``     The format in which the image data is sent.
@@ -396,26 +673,63 @@ Key      Value                 Default    Description
 ``O``    Positive integer.     ``0``      The offset from which to read data from a file.
 ``i``    Positive integer.
          ``(0 - 4294967295)``  ``0``      The image id
+``I``    Positive integer.
+         ``(0 - 4294967295)``  ``0``      The image number
+``p``    Positive integer.
+         ``(0 - 4294967295)``  ``0``      The placement id
 ``o``    Single character.     ``null``   The type of data compression.
          ``only z``
 ``m``    zero or one           ``0``      Whether there is more chunked data available.
+
 **Keys for image display**
 -----------------------------------------------------------
 ``x``    Positive integer      ``0``      The left edge (in pixels) of the image area to display
 ``y``    Positive integer      ``0``      The top edge (in pixels) of the image area to display
-``w``    Positive integer      ``0``      The width (in pixels) of the image area to display. By default, the entire width is used.
+``w``    Positive integer      ``0``      The width (in pixels) of the image area to display. By default, the entire width is used
 ``h``    Positive integer      ``0``      The height (in pixels) of the image area to display. By default, the entire height is used
 ``X``    Positive integer      ``0``      The x-offset within the first cell at which to start displaying the image
 ``Y``    Positive integer      ``0``      The y-offset within the first cell at which to start displaying the image
 ``c``    Positive integer      ``0``      The number of columns to display the image over
 ``r``    Positive integer      ``0``      The number of rows to display the image over
-``z``    Integer               ``0``      The *z-index* vertical stacking order of the image
+``C``    Positive integer      ``0``      Cursor movement policy. ``0`` is the default, to move the cursor to after the image.
+                                          ``1`` is to not move the cursor at all when placing the image.
+``z``    32-bit integer        ``0``      The *z-index* vertical stacking order of the image
+
+**Keys for animation frame loading**
+-----------------------------------------------------------
+``x``    Positive integer      ``0``      The left edge (in pixels) of where the frame data should be updated
+``y``    Positive integer      ``0``      The top edge (in pixels) of where the frame data should be updated
+``c``    Positive integer      ``0``      The 1-based frame number of the frame whose image data serves as the base data
+                                          when creating a new frame, by default the base data is black, fully transparent pixels
+``r``    Positive integer      ``0``      The 1-based frame number of the frame that is being edited. By default, a new frame is created
+``z``    32-bit integer        ``0``      The gap (in milliseconds) of this frame from the next one. A value of
+                                          zero is ignored. Negative values create a *gapless* frame. If not specified,
+                                          frames have a default gap of ``40ms``. The root frame defaults to zero gap.
+``X``    Positive integer      ``0``      The composition mode for blending pixels when creating a new frame or
+                                          editing a frame's data. The default is full alpha blending. ``1`` means a
+                                          simple overwrite.
+``Y``    Positive integer      ``0``      The background color for pixels not
+                                          specified in the frame data. Must be in 32-bit RGBA format
+
+
+**Keys for animation control**
+-----------------------------------------------------------
+``s``    Positive integer      ``0``      ``1`` - stop animation, ``2`` - run animation, but wait for new frames, ``3`` - run animation
+``r``    Positive integer      ``0``      The 1-based frame number of the frame that is being affected
+``z``    32-bit integer        ``0``      The gap (in milliseconds) of this frame from the next one. A value of
+                                          zero is ignored. Negative values create a *gapless* frame.
+``c``    Positive integer      ``0``      The 1-based frame number of the frame that should be made the current frame
+``v``    Positive integer      ``0``      The number of loops to play. ``0`` is
+                                          ignored, ``1`` is play infinite and is the default and larger number
+                                          means play that number ``-1`` loops
+
+
 **Keys for deleting images**
 -----------------------------------------------------------
 ``d``    Single character.     ``a``      What to delete.
-         ``(a, A, c, C, i,
-         I, p, P, q, Q, x, X,
-         y, Y, z, Z)``.
+         ``(a, A, c, C, n, N,
+         i, I, p, P, q, Q, x,
+         X, y, Y, z, Z)``.
 =======  ====================  =========  =================
 
 

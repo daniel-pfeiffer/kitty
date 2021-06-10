@@ -1,4 +1,5 @@
 
+#define GFW_EXTERN
 #include "data-types.h"
 #include "glfw-wrapper.h"
 #include <dlfcn.h>
@@ -16,6 +17,24 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwInit_impl) = dlsym(handle, "glfwInit");
     if (glfwInit_impl == NULL) fail("Failed to load glfw function glfwInit with error: %s", dlerror());
+
+    *(void **) (&glfwRunMainLoop_impl) = dlsym(handle, "glfwRunMainLoop");
+    if (glfwRunMainLoop_impl == NULL) fail("Failed to load glfw function glfwRunMainLoop with error: %s", dlerror());
+
+    *(void **) (&glfwStopMainLoop_impl) = dlsym(handle, "glfwStopMainLoop");
+    if (glfwStopMainLoop_impl == NULL) fail("Failed to load glfw function glfwStopMainLoop with error: %s", dlerror());
+
+    *(void **) (&glfwAddTimer_impl) = dlsym(handle, "glfwAddTimer");
+    if (glfwAddTimer_impl == NULL) fail("Failed to load glfw function glfwAddTimer with error: %s", dlerror());
+
+    *(void **) (&glfwUpdateTimer_impl) = dlsym(handle, "glfwUpdateTimer");
+    if (glfwUpdateTimer_impl == NULL) fail("Failed to load glfw function glfwUpdateTimer with error: %s", dlerror());
+
+    *(void **) (&glfwRemoveTimer_impl) = dlsym(handle, "glfwRemoveTimer");
+    if (glfwRemoveTimer_impl == NULL) fail("Failed to load glfw function glfwRemoveTimer with error: %s", dlerror());
+
+    *(void **) (&glfwSetDrawTextFunction_impl) = dlsym(handle, "glfwSetDrawTextFunction");
+    if (glfwSetDrawTextFunction_impl == NULL) fail("Failed to load glfw function glfwSetDrawTextFunction with error: %s", dlerror());
 
     *(void **) (&glfwTerminate_impl) = dlsym(handle, "glfwTerminate");
     if (glfwTerminate_impl == NULL) fail("Failed to load glfw function glfwTerminate with error: %s", dlerror());
@@ -43,6 +62,9 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwGetMonitorPos_impl) = dlsym(handle, "glfwGetMonitorPos");
     if (glfwGetMonitorPos_impl == NULL) fail("Failed to load glfw function glfwGetMonitorPos with error: %s", dlerror());
+
+    *(void **) (&glfwGetMonitorWorkarea_impl) = dlsym(handle, "glfwGetMonitorWorkarea");
+    if (glfwGetMonitorWorkarea_impl == NULL) fail("Failed to load glfw function glfwGetMonitorWorkarea with error: %s", dlerror());
 
     *(void **) (&glfwGetMonitorPhysicalSize_impl) = dlsym(handle, "glfwGetMonitorPhysicalSize");
     if (glfwGetMonitorPhysicalSize_impl == NULL) fail("Failed to load glfw function glfwGetMonitorPhysicalSize with error: %s", dlerror());
@@ -89,6 +111,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwCreateWindow_impl) = dlsym(handle, "glfwCreateWindow");
     if (glfwCreateWindow_impl == NULL) fail("Failed to load glfw function glfwCreateWindow with error: %s", dlerror());
 
+    *(void **) (&glfwToggleFullscreen_impl) = dlsym(handle, "glfwToggleFullscreen");
+    if (glfwToggleFullscreen_impl == NULL) fail("Failed to load glfw function glfwToggleFullscreen with error: %s", dlerror());
+
     *(void **) (&glfwDestroyWindow_impl) = dlsym(handle, "glfwDestroyWindow");
     if (glfwDestroyWindow_impl == NULL) fail("Failed to load glfw function glfwDestroyWindow with error: %s", dlerror());
 
@@ -115,6 +140,9 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwSetWindowSizeLimits_impl) = dlsym(handle, "glfwSetWindowSizeLimits");
     if (glfwSetWindowSizeLimits_impl == NULL) fail("Failed to load glfw function glfwSetWindowSizeLimits with error: %s", dlerror());
+
+    *(void **) (&glfwSetWindowSizeIncrements_impl) = dlsym(handle, "glfwSetWindowSizeIncrements");
+    if (glfwSetWindowSizeIncrements_impl == NULL) fail("Failed to load glfw function glfwSetWindowSizeIncrements with error: %s", dlerror());
 
     *(void **) (&glfwSetWindowAspectRatio_impl) = dlsym(handle, "glfwSetWindowAspectRatio");
     if (glfwSetWindowAspectRatio_impl == NULL) fail("Failed to load glfw function glfwSetWindowAspectRatio with error: %s", dlerror());
@@ -191,11 +219,17 @@ load_glfw(const char* path) {
     *(void **) (&glfwSetWindowCloseCallback_impl) = dlsym(handle, "glfwSetWindowCloseCallback");
     if (glfwSetWindowCloseCallback_impl == NULL) fail("Failed to load glfw function glfwSetWindowCloseCallback with error: %s", dlerror());
 
+    *(void **) (&glfwSetApplicationCloseCallback_impl) = dlsym(handle, "glfwSetApplicationCloseCallback");
+    if (glfwSetApplicationCloseCallback_impl == NULL) fail("Failed to load glfw function glfwSetApplicationCloseCallback with error: %s", dlerror());
+
     *(void **) (&glfwSetWindowRefreshCallback_impl) = dlsym(handle, "glfwSetWindowRefreshCallback");
     if (glfwSetWindowRefreshCallback_impl == NULL) fail("Failed to load glfw function glfwSetWindowRefreshCallback with error: %s", dlerror());
 
     *(void **) (&glfwSetWindowFocusCallback_impl) = dlsym(handle, "glfwSetWindowFocusCallback");
     if (glfwSetWindowFocusCallback_impl == NULL) fail("Failed to load glfw function glfwSetWindowFocusCallback with error: %s", dlerror());
+
+    *(void **) (&glfwSetWindowOcclusionCallback_impl) = dlsym(handle, "glfwSetWindowOcclusionCallback");
+    if (glfwSetWindowOcclusionCallback_impl == NULL) fail("Failed to load glfw function glfwSetWindowOcclusionCallback with error: %s", dlerror());
 
     *(void **) (&glfwSetWindowIconifyCallback_impl) = dlsym(handle, "glfwSetWindowIconifyCallback");
     if (glfwSetWindowIconifyCallback_impl == NULL) fail("Failed to load glfw function glfwSetWindowIconifyCallback with error: %s", dlerror());
@@ -209,15 +243,6 @@ load_glfw(const char* path) {
     *(void **) (&glfwSetWindowContentScaleCallback_impl) = dlsym(handle, "glfwSetWindowContentScaleCallback");
     if (glfwSetWindowContentScaleCallback_impl == NULL) fail("Failed to load glfw function glfwSetWindowContentScaleCallback with error: %s", dlerror());
 
-    *(void **) (&glfwPollEvents_impl) = dlsym(handle, "glfwPollEvents");
-    if (glfwPollEvents_impl == NULL) fail("Failed to load glfw function glfwPollEvents with error: %s", dlerror());
-
-    *(void **) (&glfwWaitEvents_impl) = dlsym(handle, "glfwWaitEvents");
-    if (glfwWaitEvents_impl == NULL) fail("Failed to load glfw function glfwWaitEvents with error: %s", dlerror());
-
-    *(void **) (&glfwWaitEventsTimeout_impl) = dlsym(handle, "glfwWaitEventsTimeout");
-    if (glfwWaitEventsTimeout_impl == NULL) fail("Failed to load glfw function glfwWaitEventsTimeout with error: %s", dlerror());
-
     *(void **) (&glfwPostEmptyEvent_impl) = dlsym(handle, "glfwPostEmptyEvent");
     if (glfwPostEmptyEvent_impl == NULL) fail("Failed to load glfw function glfwPostEmptyEvent with error: %s", dlerror());
 
@@ -227,11 +252,14 @@ load_glfw(const char* path) {
     *(void **) (&glfwSetInputMode_impl) = dlsym(handle, "glfwSetInputMode");
     if (glfwSetInputMode_impl == NULL) fail("Failed to load glfw function glfwSetInputMode with error: %s", dlerror());
 
+    *(void **) (&glfwRawMouseMotionSupported_impl) = dlsym(handle, "glfwRawMouseMotionSupported");
+    if (glfwRawMouseMotionSupported_impl == NULL) fail("Failed to load glfw function glfwRawMouseMotionSupported with error: %s", dlerror());
+
     *(void **) (&glfwGetKeyName_impl) = dlsym(handle, "glfwGetKeyName");
     if (glfwGetKeyName_impl == NULL) fail("Failed to load glfw function glfwGetKeyName with error: %s", dlerror());
 
-    *(void **) (&glfwGetKeyScancode_impl) = dlsym(handle, "glfwGetKeyScancode");
-    if (glfwGetKeyScancode_impl == NULL) fail("Failed to load glfw function glfwGetKeyScancode with error: %s", dlerror());
+    *(void **) (&glfwGetNativeKeyForKey_impl) = dlsym(handle, "glfwGetNativeKeyForKey");
+    if (glfwGetNativeKeyForKey_impl == NULL) fail("Failed to load glfw function glfwGetNativeKeyForKey with error: %s", dlerror());
 
     *(void **) (&glfwGetKey_impl) = dlsym(handle, "glfwGetKey");
     if (glfwGetKey_impl == NULL) fail("Failed to load glfw function glfwGetKey with error: %s", dlerror());
@@ -277,6 +305,9 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwSetDropCallback_impl) = dlsym(handle, "glfwSetDropCallback");
     if (glfwSetDropCallback_impl == NULL) fail("Failed to load glfw function glfwSetDropCallback with error: %s", dlerror());
+
+    *(void **) (&glfwSetLiveResizeCallback_impl) = dlsym(handle, "glfwSetLiveResizeCallback");
+    if (glfwSetLiveResizeCallback_impl == NULL) fail("Failed to load glfw function glfwSetLiveResizeCallback with error: %s", dlerror());
 
     *(void **) (&glfwJoystickPresent_impl) = dlsym(handle, "glfwJoystickPresent");
     if (glfwJoystickPresent_impl == NULL) fail("Failed to load glfw function glfwJoystickPresent with error: %s", dlerror());
@@ -326,15 +357,6 @@ load_glfw(const char* path) {
     *(void **) (&glfwGetTime_impl) = dlsym(handle, "glfwGetTime");
     if (glfwGetTime_impl == NULL) fail("Failed to load glfw function glfwGetTime with error: %s", dlerror());
 
-    *(void **) (&glfwSetTime_impl) = dlsym(handle, "glfwSetTime");
-    if (glfwSetTime_impl == NULL) fail("Failed to load glfw function glfwSetTime with error: %s", dlerror());
-
-    *(void **) (&glfwGetTimerValue_impl) = dlsym(handle, "glfwGetTimerValue");
-    if (glfwGetTimerValue_impl == NULL) fail("Failed to load glfw function glfwGetTimerValue with error: %s", dlerror());
-
-    *(void **) (&glfwGetTimerFrequency_impl) = dlsym(handle, "glfwGetTimerFrequency");
-    if (glfwGetTimerFrequency_impl == NULL) fail("Failed to load glfw function glfwGetTimerFrequency with error: %s", dlerror());
-
     *(void **) (&glfwMakeContextCurrent_impl) = dlsym(handle, "glfwMakeContextCurrent");
     if (glfwMakeContextCurrent_impl == NULL) fail("Failed to load glfw function glfwMakeContextCurrent with error: %s", dlerror());
 
@@ -360,35 +382,69 @@ load_glfw(const char* path) {
     if (glfwGetRequiredInstanceExtensions_impl == NULL) fail("Failed to load glfw function glfwGetRequiredInstanceExtensions with error: %s", dlerror());
 
     *(void **) (&glfwGetCocoaWindow_impl) = dlsym(handle, "glfwGetCocoaWindow");
+    if (glfwGetCocoaWindow_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwHideCocoaTitlebar_impl) = dlsym(handle, "glfwHideCocoaTitlebar");
+    if (glfwHideCocoaTitlebar_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwGetNSGLContext_impl) = dlsym(handle, "glfwGetNSGLContext");
+    if (glfwGetNSGLContext_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwGetCocoaMonitor_impl) = dlsym(handle, "glfwGetCocoaMonitor");
+    if (glfwGetCocoaMonitor_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwSetCocoaTextInputFilter_impl) = dlsym(handle, "glfwSetCocoaTextInputFilter");
+    if (glfwSetCocoaTextInputFilter_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwSetCocoaFileOpenCallback_impl) = dlsym(handle, "glfwSetCocoaFileOpenCallback");
+    if (glfwSetCocoaFileOpenCallback_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwSetCocoaToggleFullscreenIntercept_impl) = dlsym(handle, "glfwSetCocoaToggleFullscreenIntercept");
+    if (glfwSetCocoaToggleFullscreenIntercept_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwSetApplicationShouldHandleReopen_impl) = dlsym(handle, "glfwSetApplicationShouldHandleReopen");
+    if (glfwSetApplicationShouldHandleReopen_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwSetApplicationWillFinishLaunching_impl) = dlsym(handle, "glfwSetApplicationWillFinishLaunching");
+    if (glfwSetApplicationWillFinishLaunching_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwGetCocoaKeyEquivalent_impl) = dlsym(handle, "glfwGetCocoaKeyEquivalent");
+    if (glfwGetCocoaKeyEquivalent_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwCocoaRequestRenderFrame_impl) = dlsym(handle, "glfwCocoaRequestRenderFrame");
+    if (glfwCocoaRequestRenderFrame_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwGetX11Display_impl) = dlsym(handle, "glfwGetX11Display");
+    if (glfwGetX11Display_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwGetX11Window_impl) = dlsym(handle, "glfwGetX11Window");
+    if (glfwGetX11Window_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwSetPrimarySelectionString_impl) = dlsym(handle, "glfwSetPrimarySelectionString");
+    if (glfwSetPrimarySelectionString_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwGetPrimarySelectionString_impl) = dlsym(handle, "glfwGetPrimarySelectionString");
+    if (glfwGetPrimarySelectionString_impl == NULL) dlerror(); // clear error indicator
 
-    *(void **) (&glfwGetXKBScancode_impl) = dlsym(handle, "glfwGetXKBScancode");
+    *(void **) (&glfwGetNativeKeyForName_impl) = dlsym(handle, "glfwGetNativeKeyForName");
+    if (glfwGetNativeKeyForName_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwRequestWaylandFrameEvent_impl) = dlsym(handle, "glfwRequestWaylandFrameEvent");
+    if (glfwRequestWaylandFrameEvent_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwWaylandSetTitlebarColor_impl) = dlsym(handle, "glfwWaylandSetTitlebarColor");
+    if (glfwWaylandSetTitlebarColor_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwDBusUserNotify_impl) = dlsym(handle, "glfwDBusUserNotify");
+    if (glfwDBusUserNotify_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwDBusSetUserNotificationHandler_impl) = dlsym(handle, "glfwDBusSetUserNotificationHandler");
+    if (glfwDBusSetUserNotificationHandler_impl == NULL) dlerror(); // clear error indicator
 
     return NULL;
 }
 
 void
-unload_glfw() {
+unload_glfw(void) {
     if (handle) { dlclose(handle); handle = NULL; }
 }

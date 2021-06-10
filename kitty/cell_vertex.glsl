@@ -5,19 +5,25 @@
 #define REVERSE_SHIFT {REVERSE_SHIFT}
 #define STRIKE_SHIFT {STRIKE_SHIFT}
 #define DIM_SHIFT {DIM_SHIFT}
-#define CURSOR_TEXT_COLOR {CURSOR_TEXT_COLOR}
+#define MARK_SHIFT {MARK_SHIFT}
+#define MARK_MASK {MARK_MASK}
+#define USE_SELECTION_FG
+#define NUM_COLORS 256
 
 // Inputs {{{
 layout(std140) uniform CellRenderData {
-    float xstart, ystart, dx, dy, sprite_dx, sprite_dy, background_opacity;
+    float xstart, ystart, dx, dy, sprite_dx, sprite_dy, background_opacity, cursor_text_uses_bg;
 
-    uint default_fg, default_bg, highlight_fg, highlight_bg, cursor_color, url_color, url_style, inverted;
+    uint default_fg, default_bg, highlight_fg, highlight_bg, cursor_color, cursor_text_color, url_color, url_style, inverted;
 
     uint xnum, ynum, cursor_fg_sprite_idx;
     float cursor_x, cursor_y, cursor_w;
 
-    uint color_table[256];
+    uint color_table[NUM_COLORS + MARK_MASK + MARK_MASK + 2];
 };
+#ifdef BACKGROUND
+uniform uint draw_bg_bitfield;
+#endif
 
 // Have to use fixed locations here as all variants of the cell program share the same VAO
 layout(location=0) in uvec3 colors;
@@ -45,6 +51,7 @@ const uvec2 cell_pos_map[] = uvec2[4](
 
 #ifdef NEEDS_BACKROUND
 out vec3 background;
+out float draw_bg;
 #if defined(TRANSPARENT) || defined(SPECIAL)
 out float bg_alpha;
 #endif
@@ -114,7 +121,7 @@ vec3 choose_color(float q, vec3 a, vec3 b) {
     return mix(b, a, q);
 }
 
-float are_integers_equal(float a, float b) { // return 1 iff equal otherwise 0
+float are_integers_equal(float a, float b) { // return 1 if equal otherwise 0
     float delta = abs(a - b);  // delta can be 0, 1 or larger
     return step(delta, 0.5); // 0 if 0.5 < delta else 1
 }
@@ -151,13 +158,18 @@ void main() {
     // set cell color indices {{{
     uvec2 default_colors = uvec2(default_fg, default_bg);
     uint text_attrs = sprite_coords[3];
-    uint is_inverted = ((text_attrs >> REVERSE_SHIFT) & ONE) + inverted;
+    uint is_reversed = ((text_attrs >> REVERSE_SHIFT) & ONE);
+    uint is_inverted = is_reversed + inverted;
     int fg_index = fg_index_map[is_inverted];
     int bg_index = 1 - fg_index;
     float cell_has_cursor = is_cursor(c, r);
     float is_block_cursor = step(float(cursor_fg_sprite_idx), 0.5);
     float cell_has_block_cursor = cell_has_cursor * is_block_cursor;
-    vec3 bg = to_color(colors[bg_index], default_colors[bg_index]);
+    int mark = int(text_attrs >> MARK_SHIFT) & MARK_MASK;
+    uint has_mark = uint(step(1, float(mark)));
+    uint bg_as_uint = resolve_color(colors[bg_index], default_colors[bg_index]);
+    bg_as_uint = has_mark * color_table[NUM_COLORS + mark] + (ONE - has_mark) * bg_as_uint;
+    vec3 bg = color_to_vec(bg_as_uint);
     // }}}
 
     // Foreground {{{
@@ -168,48 +180,67 @@ void main() {
     colored_sprite = float((sprite_coords.z & COLOR_MASK) >> 14);
 
     // Foreground
-    uint resolved_fg = resolve_color(colors[fg_index], default_colors[fg_index]);
-    foreground = color_to_vec(resolved_fg);
+    uint fg_as_uint = resolve_color(colors[fg_index], default_colors[fg_index]);
+    fg_as_uint = has_mark * color_table[NUM_COLORS + MARK_MASK + 1 + mark] + (ONE - has_mark) * fg_as_uint;
+    foreground = color_to_vec(fg_as_uint);
     float has_dim = float((text_attrs >> DIM_SHIFT) & ONE);
     effective_text_alpha = inactive_text_alpha * mix(1.0, dim_opacity, has_dim);
-    // Selection
-    foreground = choose_color(float(is_selected & ONE), color_to_vec(highlight_fg), foreground);
-    // Underline and strike through (rendered via sprites)
     float in_url = float((is_selected & TWO) >> 1);
-    decoration_fg = choose_color(in_url, color_to_vec(url_color), to_color(colors[2], resolved_fg));
+    decoration_fg = choose_color(in_url, color_to_vec(url_color), to_color(colors[2], fg_as_uint));
+#ifdef USE_SELECTION_FG
+    // Selection
+    vec3 selection_color = color_to_vec(highlight_fg);
+    foreground = choose_color(float(is_selected & ONE), selection_color, foreground);
+    decoration_fg = choose_color(float(is_selected & ONE), selection_color, decoration_fg);
+#endif
+    // Underline and strike through (rendered via sprites)
     underline_pos = choose_color(in_url, to_sprite_pos(pos, url_style, ZERO, ZERO), to_sprite_pos(pos, (text_attrs >> DECORATION_SHIFT) & THREE, ZERO, ZERO));
     strike_pos = to_sprite_pos(pos, ((text_attrs >> STRIKE_SHIFT) & ONE) * FOUR, ZERO, ZERO);
 
     // Cursor
     cursor_color_vec = vec4(color_to_vec(cursor_color), 1.0);
-    foreground = choose_color(cell_has_block_cursor, CURSOR_TEXT_COLOR, foreground);
-    decoration_fg = choose_color(cell_has_block_cursor, CURSOR_TEXT_COLOR, decoration_fg);
+    vec3 final_cursor_text_color = mix(color_to_vec(cursor_text_color), bg, cursor_text_uses_bg);
+    foreground = choose_color(cell_has_block_cursor, final_cursor_text_color, foreground);
+    decoration_fg = choose_color(cell_has_block_cursor, final_cursor_text_color, decoration_fg);
     cursor_pos = to_sprite_pos(pos, cursor_fg_sprite_idx * uint(cell_has_cursor), ZERO, ZERO);
 #endif
     // }}}
 
     // Background {{{
 #ifdef NEEDS_BACKROUND
+    float cell_has_non_default_bg = step(1, float(abs(bg_as_uint - default_colors[1])));
+    draw_bg = 1;
 
 #if defined(BACKGROUND)
     background = bg;
+    // draw_bg_bitfield has bit 0 set to draw default bg cells and bit 1 set to draw non-default bg cells
+    uint draw_bg_mask = uint(2 * cell_has_non_default_bg + (1 - cell_has_non_default_bg));
+    draw_bg = step(1, float(draw_bg_bitfield & draw_bg_mask));
 #endif
 
-#if defined(TRANSPARENT) && !defined(SPECIAL)
-    // If the background color is default, set its opacity to background_opacity, otherwise it should be opaque
-    bg_alpha = step(0.5, float(colors[bg_index] & BYTE_MASK));
-    // Cursor must not be affected by background_opacity
-    bg_alpha = mix(bg_alpha, 1.0, cell_has_block_cursor);
+#ifdef TRANSPARENT
+    // Set bg_alpha to background_opacity on cells that have the default background color
+    // Which means they must not have a block cursor or a selection or reverse video
+    // On other cells it should be 1. For the SPECIAL program it should be 1 on cells with
+    // selections/block cursor and 0 everywhere else.
+    float is_special_cell = cell_has_block_cursor + float(is_selected & ONE);
+#ifndef SPECIAL
+    is_special_cell += cell_has_non_default_bg + float(is_reversed);
+#endif
+    bg_alpha = step(0.5, is_special_cell);
+#ifndef SPECIAL
     bg_alpha = bg_alpha + (1.0f - bg_alpha) * background_opacity;
+    bg_alpha *= draw_bg;
+#endif
 #endif
 
 #if defined(SPECIAL) || defined(SIMPLE)
     // Selection and cursor
     bg = choose_color(float(is_selected & ONE), color_to_vec(highlight_bg), bg);
     background = choose_color(cell_has_block_cursor, color_to_vec(cursor_color), bg);
-#ifdef SPECIAL
-    // bg_alpha should be 1 if cursor/selection otherwise 0
-    bg_alpha = mix(0.0, 1.0, step(0.5, float(is_selected & ONE) + cell_has_block_cursor));
+#if !defined(TRANSPARENT) && defined(SPECIAL)
+    float is_special_cell = cell_has_block_cursor + float(is_selected & ONE);
+    bg_alpha = step(0.5, is_special_cell);
 #endif
 #endif
 

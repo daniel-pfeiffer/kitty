@@ -1,18 +1,36 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
 import re
-from collections import namedtuple
+from contextlib import suppress
+from typing import Optional, NamedTuple
 
-Color = namedtuple('Color', 'red green blue')
+
+class Color(NamedTuple):
+    red: int
+    green: int
+    blue: int
+
+    def luminance(self) -> float:
+        return 0.299 * self.red + 0.587 * self.green + 0.114 * self.blue
+
+    def contrast(self, other: 'Color') -> float:
+        a = self.luminance()
+        b = other.luminance()
+        if a < b:
+            a, b = b, a
+        return (a + 0.05) / (b + 0.05)
+
+    def __int__(self) -> int:
+        return self.red << 16 | self.green << 8 | self.blue
 
 
-def alpha_blend_channel(top_color, bottom_color, alpha):
+def alpha_blend_channel(top_color: int, bottom_color: int, alpha: float) -> int:
     return int(alpha * top_color + (1 - alpha) * bottom_color)
 
 
-def alpha_blend(top_color, bottom_color, alpha):
+def alpha_blend(top_color: Color, bottom_color: Color, alpha: float) -> Color:
     return Color(
             alpha_blend_channel(top_color.red, bottom_color.red, alpha),
             alpha_blend_channel(top_color.green, bottom_color.green, alpha),
@@ -20,55 +38,55 @@ def alpha_blend(top_color, bottom_color, alpha):
     )
 
 
-def parse_single_color(c):
+def parse_single_color(c: str) -> int:
     if len(c) == 1:
         c += c
     return int(c[:2], 16)
 
 
-def parse_sharp(spec):
+def parse_sharp(spec: str) -> Optional[Color]:
     if len(spec) in (3, 6, 9, 12):
         part_len = len(spec) // 3
         colors = re.findall(r'[a-fA-F0-9]{%d}' % part_len, spec)
         return Color(*map(parse_single_color, colors))
+    return None
 
 
-def parse_rgb(spec):
+def parse_rgb(spec: str) -> Optional[Color]:
     colors = spec.split('/')
     if len(colors) == 3:
         return Color(*map(parse_single_color, colors))
+    return None
 
 
-def color_from_int(x):
+def color_from_int(x: int) -> Color:
     return Color((x >> 16) & 255, (x >> 8) & 255, x & 255)
 
 
-def color_as_int(x):
+def color_as_int(x: Color) -> int:
     return x.red << 16 | x.green << 8 | x.blue
 
 
-def color_as_sharp(x):
+def color_as_sharp(x: Color) -> str:
     return '#{:02x}{:02x}{:02x}'.format(*x)
 
 
-def color_as_sgr(x):
+def color_as_sgr(x: Color) -> str:
     return ':2:{}:{}:{}'.format(*x)
 
 
-def to_color(raw, validate=False):
+def to_color(raw: str, validate: bool = False) -> Optional[Color]:
     # See man XParseColor
     x = raw.strip().lower()
     ans = color_names.get(x)
     if ans is not None:
         return ans
-    val = None
-    try:
+    val: Optional[Color] = None
+    with suppress(Exception):
         if raw.startswith('#'):
             val = parse_sharp(raw[1:])
         elif raw[:4].lower() == 'rgb:':
             val = parse_rgb(raw[4:])
-    except Exception:
-        pass
     if val is None and validate:
         raise ValueError('Invalid color name: {}'.format(raw))
     return val
@@ -836,20 +854,21 @@ if __name__ == '__main__':
     import sys
     import pprint
     data = {}
-    for line in open(sys.argv[-1]):
-        line = line.strip()
-        if not line or line.startswith('!'):
-            continue
-        parts = line.split()
-        r, g, b = map(int, parts[:3])
-        name = ' '.join(parts[3:]).lower()
-        data[name] = data[name.replace(' ', '')] = r, g, b
-    data = pprint.pformat(data).replace('{', '{\n ').replace('(', 'Color(')
+    with open(sys.argv[-1]) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('!'):
+                continue
+            parts = line.split()
+            r, g, b = map(int, parts[:3])
+            name = ' '.join(parts[3:]).lower()
+            data[name] = data[name.replace(' ', '')] = r, g, b
+    formatted_data = pprint.pformat(data).replace('{', '{\n ').replace('(', 'Color(')
     with open(__file__, 'r+') as src:
         raw = src.read()
         raw = re.sub(
             r'^# BEGIN_DATA_SECTION {{{$.*^# END_DATA_SECTION }}}',
-            '# BEGIN_DATA_SECTION {{{\ncolor_names = %s\n# END_DATA_SECTION }}}' % data,
+            '# BEGIN_DATA_SECTION {{{\ncolor_names = %s\n# END_DATA_SECTION }}}' % formatted_data,
             raw, flags=re.DOTALL | re.MULTILINE
         )
         src.seek(0), src.truncate(), src.write(raw)

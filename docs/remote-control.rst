@@ -21,7 +21,7 @@ In order for control to work, :opt:`allow_remote_control` must be enabled in
 
 Now, in the new |kitty| window, enter the command::
 
-    kitty @ new-window --title Output --keep-focus cat
+    kitty @ launch --title Output --keep-focus cat
 
 This will open a new window, running the ``cat`` program that will appear next
 to the current window.
@@ -54,7 +54,7 @@ window. Type ``Ctrl+D`` when you are ready to stop.
 
 Now, let's open a new tab::
 
-   kitty @ new-window --new-tab --tab-title "My Tab" --keep-focus bash
+   kitty @ launch --type=tab --tab-title "My Tab" --keep-focus bash
 
 This will open a new tab running the bash shell with the title "My Tab".
 We can change the title of the tab with::
@@ -115,8 +115,10 @@ shell. Run ``kitty @`` with no arguments and you will be dropped into the |kitty
 shell with completion for |kitty| command names and options.
 
 You can even open the |kitty| shell inside a running |kitty| using a simple
-keyboard shortcut (:sc:`kitty_shell` by default). This has the added
-advantage that you don't need to use ``allow_remote_control`` to make it work.
+keyboard shortcut (:sc:`kitty_shell` by default).
+
+.. note:: This has the added advantage that you don't need to use
+   ``allow_remote_control`` to make it work.
 
 
 Allowing only some windows to control kitty
@@ -126,7 +128,7 @@ If you do not want to allow all programs running in |kitty| to control it, you c
 enable remote control for only some |kitty| windows. Simply create a shortcut
 such as::
 
-    map ctrl+k new_window @ some_program
+    map ctrl+k launch --allow-remote-control some_program
 
 Then programs running in windows created with that shortcut can use ``kitty @``
 to control kitty. Note that any program with the right level of permissions can
@@ -134,5 +136,46 @@ still write to the pipes of any other program on the same computer and
 therefore can control |kitty|. It can, however, be useful to block programs
 running on other computers (for example, over ssh) or as other users.
 
+.. note:: You dont need ``allow_remote_control`` to make this work as it is
+   limited to only programs running in that specific window. Be careful with
+   what programs you run in such windows, since they can effectively control
+   kitty, as if you were running with ``allow_remote_control`` turned on.
+
+
+Mapping key presses to remote control commands
+--------------------------------------------------
+
+If you wish to trigger a remote control command easily with just a keypress,
+you can map it in :file:`kitty.conf`. For example::
+
+    map F1 remote_control set-spacing margin=30
+
+Then pressing the :kbd:`F1` key will set the active window margins to 30.
+The syntax for what follows :code:`remote_control` is exactly the same
+as the syntax for what follows :code:`kitty @` above.
+
+.. note:: You do not need ``allow_remote_control`` to use these mappings,
+   as they are not actual remote programs, but are simply a way to resuse
+   the remote control infrastructure via keybings.
+
+
+Broadcasting what you type to all kitty windows
+--------------------------------------------------
+
+As a simple illustration of the power of remote control, lets
+have what we type sent to all open kitty windows. To do that define the
+following mapping in :file:`kitty.conf`::
+
+    map F1 launch --allow-remote-control kitty +kitten broadcast
+
+Now press, F1 and start typing, what you type will be sent to all windows,
+live, as you type it.
+
+
+Documentation for the remote control protocol
+-----------------------------------------------
+
+If you wish to develop your own client to talk to |kitty|, you
+can use the :doc:`rc_protocol`.
 
 .. include:: generated/cli-kitty-at.rst

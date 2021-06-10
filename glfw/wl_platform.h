@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 Wayland - www.glfw.org
+// GLFW 3.4 Wayland - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2014 Jonas Ådahl <jadahl@gmail.com>
 //
@@ -43,7 +43,6 @@ typedef VkResult (APIENTRY *PFN_vkCreateWaylandSurfaceKHR)(VkInstance,const VkWa
 typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR)(VkPhysicalDevice,uint32_t,struct wl_display*);
 
 #include "posix_thread.h"
-#include "posix_time.h"
 #ifdef __linux__
 #include "linux_joystick.h"
 #else
@@ -51,23 +50,19 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 #endif
 #include "backend_utils.h"
 #include "xkb_glfw.h"
-#include "egl_context.h"
-#include "osmesa_context.h"
+#include "wl_cursors.h"
 
 #include "wayland-xdg-shell-client-protocol.h"
-#include "wayland-viewporter-client-protocol.h"
 #include "wayland-xdg-decoration-unstable-v1-client-protocol.h"
 #include "wayland-relative-pointer-unstable-v1-client-protocol.h"
 #include "wayland-pointer-constraints-unstable-v1-client-protocol.h"
 #include "wayland-idle-inhibit-unstable-v1-client-protocol.h"
 #include "wayland-primary-selection-unstable-v1-client-protocol.h"
+#include "wl_text_input.h"
 
 #define _glfw_dlopen(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
 #define _glfw_dlclose(handle) dlclose(handle)
 #define _glfw_dlsym(handle, name) dlsym(handle, name)
-
-#define _GLFW_EGL_NATIVE_WINDOW         ((EGLNativeWindowType) window->wl.native)
-#define _GLFW_EGL_NATIVE_DISPLAY        ((EGLNativeDisplayType) _glfw.wl.display)
 
 #define _GLFW_PLATFORM_WINDOW_STATE         _GLFWwindowWayland  wl
 #define _GLFW_PLATFORM_LIBRARY_WINDOW_STATE _GLFWlibraryWayland wl
@@ -77,18 +72,6 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 #define _GLFW_PLATFORM_CONTEXT_STATE
 #define _GLFW_PLATFORM_LIBRARY_CONTEXT_STATE
 
-struct wl_cursor_image {
-    uint32_t width;
-    uint32_t height;
-    uint32_t hotspot_x;
-    uint32_t hotspot_y;
-    uint32_t delay;
-};
-struct wl_cursor {
-    unsigned int image_count;
-    struct wl_cursor_image** images;
-    char* name;
-};
 typedef struct wl_cursor_theme* (* PFN_wl_cursor_theme_load)(const char*, int, struct wl_shm*);
 typedef void (* PFN_wl_cursor_theme_destroy)(struct wl_cursor_theme*);
 typedef struct wl_cursor* (* PFN_wl_cursor_theme_get_cursor)(struct wl_cursor_theme*, const char*);
@@ -105,41 +88,56 @@ typedef void (* PFN_wl_egl_window_resize)(struct wl_egl_window*, int, int, int, 
 #define wl_egl_window_destroy _glfw.wl.egl.window_destroy
 #define wl_egl_window_resize _glfw.wl.egl.window_resize
 
-#define _GLFW_DECORATION_WIDTH 4
-#define _GLFW_DECORATION_TOP 24
-#define _GLFW_DECORATION_VERTICAL (_GLFW_DECORATION_TOP + _GLFW_DECORATION_WIDTH)
-#define _GLFW_DECORATION_HORIZONTAL (2 * _GLFW_DECORATION_WIDTH)
-
 typedef enum _GLFWdecorationSideWayland
 {
-    mainWindow,
-    topDecoration,
-    leftDecoration,
-    rightDecoration,
-    bottomDecoration,
-
+    CENTRAL_WINDOW,
+    TOP_DECORATION,
+    LEFT_DECORATION,
+    RIGHT_DECORATION,
+    BOTTOM_DECORATION,
 } _GLFWdecorationSideWayland;
 
-typedef struct _GLFWdecorationWayland
-{
-    struct wl_surface*          surface;
-    struct wl_subsurface*       subsurface;
-    struct wp_viewport*         viewport;
+typedef struct _GLFWWaylandBufferPair {
+    struct wl_buffer *a, *b, *front, *back;
+    struct { uint8_t *a, *b, *front, *back; } data;
+    bool has_pending_update;
+    size_t size_in_bytes, width, height, stride;
+} _GLFWWaylandBufferPair;
 
-} _GLFWdecorationWayland;
+typedef struct _GLFWWaylandCSDEdge {
+    struct wl_surface *surface;
+    struct wl_subsurface *subsurface;
+    _GLFWWaylandBufferPair buffer;
+    int x, y;
+} _GLFWWaylandCSDEdge;
+
+typedef enum WaylandWindowState {
+
+    TOPLEVEL_STATE_NONE = 0,
+    TOPLEVEL_STATE_MAXIMIZED = 1,
+    TOPLEVEL_STATE_FULLSCREEN = 2,
+	TOPLEVEL_STATE_RESIZING = 4,
+	TOPLEVEL_STATE_ACTIVATED = 8,
+	TOPLEVEL_STATE_TILED_LEFT = 16,
+	TOPLEVEL_STATE_TILED_RIGHT = 32,
+	TOPLEVEL_STATE_TILED_TOP = 64,
+	TOPLEVEL_STATE_TILED_BOTTOM = 128,
+} WaylandWindowState;
+
+
+static const WaylandWindowState TOPLEVEL_STATE_DOCKED = TOPLEVEL_STATE_MAXIMIZED | TOPLEVEL_STATE_FULLSCREEN | TOPLEVEL_STATE_TILED_TOP | TOPLEVEL_STATE_TILED_LEFT | TOPLEVEL_STATE_TILED_RIGHT | TOPLEVEL_STATE_TILED_BOTTOM;
+
 
 // Wayland-specific per-window data
 //
 typedef struct _GLFWwindowWayland
 {
     int                         width, height;
-    GLFWbool                    visible;
-    GLFWbool                    maximized;
-    GLFWbool                    hovered;
-    GLFWbool                    transparent;
+    bool                        visible;
+    bool                        hovered;
+    bool                        transparent;
     struct wl_surface*          surface;
     struct wl_egl_window*       native;
-    struct wl_shell_surface*    shellSurface;
     struct wl_callback*         callback;
 
     struct {
@@ -149,7 +147,7 @@ typedef struct _GLFWwindowWayland
     } xdg;
 
     _GLFWcursor*                currentCursor;
-    double                      cursorPosX, cursorPosY;
+    double                      cursorPosX, cursorPosY, allCursorPosX, allCursorPosY;
 
     char*                       title;
     char                        appId[256];
@@ -157,6 +155,7 @@ typedef struct _GLFWwindowWayland
     // We need to track the monitors the window spans on to calculate the
     // optimal scaling factor.
     int                         scale;
+    bool                        initial_scale_notified;
     _GLFWmonitor**              monitors;
     int                         monitorsCount;
     int                         monitorsSize;
@@ -168,14 +167,37 @@ typedef struct _GLFWwindowWayland
 
     struct zwp_idle_inhibitor_v1*          idleInhibitor;
 
-    // This is a hack to prevent auto-iconification on creation.
-    GLFWbool                    justCreated;
-
     struct {
-        GLFWbool                           serverSide;
-        struct wl_buffer*                  buffer;
-        _GLFWdecorationWayland             top, left, right, bottom;
-        int                                focus;
+        bool serverSide;
+        _GLFWdecorationSideWayland focus;
+        _GLFWWaylandCSDEdge top, left, right, bottom;
+
+        struct {
+            uint8_t *data;
+            size_t size;
+        } mapping;
+
+        struct {
+            int width, height, scale;
+            bool focused;
+        } for_window_state;
+
+        struct {
+            unsigned int width, top, horizontal, vertical, visible_titlebar_height;
+        } metrics;
+
+        struct {
+            int32_t x, y, width, height;
+        } geometry;
+
+        struct {
+            uint32_t *data;
+            size_t for_decoration_size, stride, segments, corner_size;
+        } shadow_tile;
+        monotonic_t last_click_on_top_decoration_at;
+
+        uint32_t titlebar_color;
+        bool use_custom_titlebar_color;
     } decorations;
 
     struct {
@@ -184,6 +206,12 @@ typedef struct _GLFWwindowWayland
         struct wl_callback *current_wl_callback;
     } frameCallbackData;
 
+    struct {
+        int32_t width, height;
+    } user_requested_content_size;
+
+    uint32_t toplevel_states;
+    bool maximize_on_first_show;
 
 } _GLFWwindowWayland;
 
@@ -197,27 +225,18 @@ typedef enum _GLFWWaylandOfferType
 
 typedef struct _GLFWWaylandDataOffer
 {
-    struct wl_data_offer *id;
-    const char *mime;
+    void *id;
     _GLFWWaylandOfferType offer_type;
     size_t idx;
-    int is_self_offer;
-    int has_uri_list;
+    bool is_self_offer;
+    bool is_primary;
+    const char *plain_text_mime, *mime_for_drop;
     uint32_t source_actions;
     uint32_t dnd_action;
     struct wl_surface *surface;
+    const char **mimes;
+    size_t mimes_capacity, mimes_count;
 } _GLFWWaylandDataOffer;
-
-typedef struct _GLFWWaylandPrimaryOffer
-{
-    struct zwp_primary_selection_offer_v1 *id;
-    const char *mime;
-    _GLFWWaylandOfferType offer_type;
-    size_t idx;
-    int is_self_offer;
-    int has_uri_list;
-    struct wl_surface *surface;
-} _GLFWWaylandPrimaryOffer;
 
 // Wayland-specific global data
 //
@@ -227,19 +246,17 @@ typedef struct _GLFWlibraryWayland
     struct wl_registry*         registry;
     struct wl_compositor*       compositor;
     struct wl_subcompositor*    subcompositor;
-    struct wl_shell*            shell;
     struct wl_shm*              shm;
     struct wl_seat*             seat;
     struct wl_pointer*          pointer;
     struct wl_keyboard*         keyboard;
+    struct wl_data_device_manager*          dataDeviceManager;
+    struct wl_data_device*      dataDevice;
     struct xdg_wm_base*         wmBase;
     struct zxdg_decoration_manager_v1*      decorationManager;
-    struct wp_viewporter*       viewporter;
     struct zwp_relative_pointer_manager_v1* relativePointerManager;
     struct zwp_pointer_constraints_v1*      pointerConstraints;
     struct zwp_idle_inhibit_manager_v1*     idleInhibitManager;
-    struct wl_data_device_manager*          dataDeviceManager;
-    struct wl_data_device*                  dataDevice;
     struct wl_data_source*                  dataSourceForClipboard;
     struct zwp_primary_selection_device_manager_v1* primarySelectionDeviceManager;
     struct zwp_primary_selection_device_v1*    primarySelectionDevice;
@@ -248,23 +265,24 @@ typedef struct _GLFWlibraryWayland
     int                         compositorVersion;
     int                         seatVersion;
 
-    struct wl_cursor_theme*     cursorTheme;
     struct wl_surface*          cursorSurface;
-    uint32_t                    pointerSerial;
+    GLFWCursorShape             cursorPreviousShape;
+    uint32_t                    serial;
 
     int32_t                     keyboardRepeatRate;
-    int32_t                     keyboardRepeatDelay;
+    monotonic_t                 keyboardRepeatDelay;
+
     struct {
         uint32_t                key;
         id_type                 keyRepeatTimer;
-        _GLFWwindow*            keyboardFocus;
+        GLFWid                  keyboardFocusId;
     } keyRepeatInfo;
     id_type                     cursorAnimationTimer;
     _GLFWXKBData                xkb;
     _GLFWDBUSData               dbus;
 
     _GLFWwindow*                pointerFocus;
-    _GLFWwindow*                keyboardFocus;
+    GLFWid                      keyboardFocusId;
 
     struct {
         void*                   handle;
@@ -289,8 +307,6 @@ typedef struct _GLFWlibraryWayland
     size_t dataOffersCounter;
     _GLFWWaylandDataOffer dataOffers[8];
     char* primarySelectionString;
-    size_t primarySelectionOffersCounter;
-    _GLFWWaylandPrimaryOffer primarySelectionOffers[8];
 } _GLFWlibraryWayland;
 
 // Wayland-specific per-monitor data
@@ -298,7 +314,7 @@ typedef struct _GLFWlibraryWayland
 typedef struct _GLFWmonitorWayland
 {
     struct wl_output*           output;
-    int                         name;
+    uint32_t                    name;
     int                         currentMode;
 
     int                         x;
@@ -315,11 +331,17 @@ typedef struct _GLFWcursorWayland
     struct wl_buffer*           buffer;
     int                         width, height;
     int                         xhot, yhot;
-    int                         currentImage;
+    unsigned int                currentImage;
+    /** The scale of the cursor, or 0 if the cursor should be loaded late, or -1 if the cursor variable itself is unused. */
+    int                         scale;
+    /** Cursor shape stored to allow late cursor loading in setCursorImage. */
+    GLFWCursorShape             shape;
 } _GLFWcursorWayland;
 
 
 void _glfwAddOutputWayland(uint32_t name, uint32_t version);
-void _glfwSetupWaylandDataDevice();
-void _glfwSetupWaylandPrimarySelectionDevice();
+void _glfwSetupWaylandDataDevice(void);
+void _glfwSetupWaylandPrimarySelectionDevice(void);
 void animateCursorImage(id_type timer_id, void *data);
+struct wl_cursor* _glfwLoadCursor(GLFWCursorShape, struct wl_cursor_theme*);
+void destroy_data_offer(_GLFWWaylandDataOffer*);

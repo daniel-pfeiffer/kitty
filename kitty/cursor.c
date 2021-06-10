@@ -47,7 +47,7 @@ cursor_reset_display_attrs(Cursor *self) {
 
 
 static inline void
-parse_color(unsigned int *params, unsigned int *i, unsigned int count, uint32_t *result) {
+parse_color(int *params, unsigned int *i, unsigned int count, uint32_t *result) {
     unsigned int attr;
     uint8_t r, g, b;
     if (*i < count) {
@@ -73,7 +73,7 @@ parse_color(unsigned int *params, unsigned int *i, unsigned int count, uint32_t 
 
 
 void
-cursor_from_sgr(Cursor *self, unsigned int *params, unsigned int count) {
+cursor_from_sgr(Cursor *self, int *params, unsigned int count) {
 #define SET_COLOR(which) { parse_color(params, &i, count, &self->which); } break;
 START_ALLOW_CASE_RANGE
     unsigned int i = 0, attr;
@@ -136,7 +136,7 @@ END_ALLOW_CASE_RANGE
 }
 
 void
-apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, unsigned int *params, unsigned int count) {
+apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, unsigned int count) {
 #define RANGE for(unsigned c = 0; c < cell_count; c++, cell++)
 #define SET(shift) RANGE { cell->attrs |= (1 << shift); } break;
 #define RESET(shift) RANGE { cell->attrs &= ~(1 << shift); } break;

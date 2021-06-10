@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -42,3 +42,7 @@ class TestTUI(BaseTest):
         self.ae(le.cursor_pos, 0)
         le.backspace()
         self.assertTrue(le.pending_bell)
+
+    def test_multiprocessing_spawn(self):
+        from kitty.multiprocessing import test_spawn
+        test_spawn()

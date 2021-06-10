@@ -1,13 +1,17 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 import shutil
 import subprocess
 import sys
+from typing import Callable, Dict, List, Tuple
 
 from kitty.cli import parse_args
-from kitty.constants import is_macos, is_wayland
+from kitty.cli_stub import PanelCLIOptions
+from kitty.constants import is_macos, appname
+from kitty.os_window_size import WindowSizeData
 
 OPTIONS = r'''
 --lines
@@ -38,22 +42,34 @@ Path to config file to use for kitty when drawing the panel.
 type=list
 Override individual kitty configuration options, can be specified multiple times.
 Syntax: :italic:`name=value`. For example: :option:`kitty +kitten panel -o` font_size=20
-'''.format
 
 
-args = None
+--class
+dest=cls
+default={appname}-panel
+condition=not is_macos
+Set the class part of the :italic:`WM_CLASS` window property. On Wayland, it sets the app id.
+
+
+--name
+condition=not is_macos
+Set the name part of the :italic:`WM_CLASS` property (defaults to using the value from :option:`{appname} --class`)
+'''.format(appname=appname).format
+
+
+args = PanelCLIOptions()
 help_text = 'Use a command line program to draw a GPU accelerated panel on your X11 desktop'
 usage = 'program-to-run'
 
 
-def parse_panel_args(args):
-    return parse_args(args, OPTIONS, usage, help_text, 'kitty +kitten panel')
+def parse_panel_args(args: List[str]) -> Tuple[PanelCLIOptions, List[str]]:
+    return parse_args(args, OPTIONS, usage, help_text, 'kitty +kitten panel', result_class=PanelCLIOptions)
 
 
-def call_xprop(*cmd, silent=False):
-    cmd = ['xprop'] + list(cmd)
+def call_xprop(*cmd: str, silent: bool = False) -> None:
+    cmd_ = ['xprop'] + list(cmd)
     try:
-        cp = subprocess.run(cmd, stdout=subprocess.DEVNULL if silent else None)
+        cp = subprocess.run(cmd_, stdout=subprocess.DEVNULL if silent else None)
     except FileNotFoundError:
         raise SystemExit('You must have the xprop program installed')
     if cp.returncode != 0:
@@ -61,11 +77,11 @@ def call_xprop(*cmd, silent=False):
 
 
 def create_strut(
-    win_id,
-    left=0, right=0, top=0, bottom=0, left_start_y=0, left_end_y=0,
-    right_start_y=0, right_end_y=0, top_start_x=0, top_end_x=0,
-    bottom_start_x=0, bottom_end_x=0
-):
+    win_id: int,
+    left: int = 0, right: int = 0, top: int = 0, bottom: int = 0, left_start_y: int = 0, left_end_y: int = 0,
+    right_start_y: int = 0, right_end_y: int = 0, top_start_x: int = 0, top_end_x: int = 0,
+    bottom_start_x: int = 0, bottom_end_x: int = 0
+) -> None:
     call_xprop(
             '-id',
             str(int(win_id)), '-format', '_NET_WM_STRUT_PARTIAL', '32cccccccccccc',
@@ -76,52 +92,54 @@ def create_strut(
     )
 
 
-def create_top_strut(win_id, width, height):
+def create_top_strut(win_id: int, width: int, height: int) -> None:
     create_strut(win_id, top=height, top_end_x=width)
 
 
-def create_bottom_strut(win_id, width, height):
+def create_bottom_strut(win_id: int, width: int, height: int) -> None:
     create_strut(win_id, bottom=height, bottom_end_x=width)
 
 
-def create_left_strut(win_id, width, height):
+def create_left_strut(win_id: int, width: int, height: int) -> None:
     create_strut(win_id, left=width, left_end_y=height)
 
 
-def create_right_strut(win_id, width, height):
+def create_right_strut(win_id: int, width: int, height: int) -> None:
     create_strut(win_id, right=width, right_end_y=height)
 
 
-def setup_x11_window(win_id):
+window_width = window_height = 0
+
+
+def setup_x11_window(win_id: int) -> None:
     call_xprop(
             '-id', str(win_id), '-format', '_NET_WM_WINDOW_TYPE', '32a',
             '-set', '_NET_WM_WINDOW_TYPE', '_NET_WM_WINDOW_TYPE_DOCK'
     )
     func = globals()['create_{}_strut'.format(args.edge)]
-    func(win_id, initial_window_size_func.width, initial_window_size_func.height)
+    func(win_id, window_width, window_height)
 
 
-def initial_window_size_func(opts, *a):
-    from kitty.fast_data_types import glfw_primary_monitor_size, set_smallest_allowed_resize
+def initial_window_size_func(opts: WindowSizeData, cached_values: Dict) -> Callable[[int, int, float, float, float, float], Tuple[int, int]]:
+    from kitty.fast_data_types import glfw_primary_monitor_size
 
-    def initial_window_size(cell_width, cell_height, dpi_x, dpi_y):
+    def initial_window_size(cell_width: int, cell_height: int, dpi_x: float, dpi_y: float, xscale: float, yscale: float) -> Tuple[int, int]:
+        global window_width, window_height
         monitor_width, monitor_height = glfw_primary_monitor_size()
         if args.edge in {'top', 'bottom'}:
-            h = initial_window_size_func.height = cell_height * args.lines + 1
-            initial_window_size_func.width = monitor_width
-            set_smallest_allowed_resize(100, h)
+            window_height = cell_height * args.lines + 1
+            window_width = monitor_width
         else:
-            w = initial_window_size_func.width = cell_width * args.columns + 1
-            initial_window_size_func.height = monitor_height
-            set_smallest_allowed_resize(w, 100)
-        return initial_window_size_func.width, initial_window_size_func.height
+            window_width = cell_width * args.columns + 1
+            window_height = monitor_height
+        return window_width, window_height
 
     return initial_window_size
 
 
-def main(sys_args):
+def main(sys_args: List[str]) -> None:
     global args
-    if is_macos or is_wayland:
+    if is_macos or not os.environ.get('DISPLAY'):
         raise SystemExit('Currently the panel kitten is supported only on X11 desktops')
     if not shutil.which('xprop'):
         raise SystemExit('The xprop program is required for the panel kitten')
@@ -129,21 +147,25 @@ def main(sys_args):
     if not items:
         raise SystemExit('You must specify the program to run')
     sys.argv = ['kitty']
-    if args.config:
-        sys.argv.append('--config={}'.format(args.config))
+    for config in args.config:
+        sys.argv.extend(('--config', config))
+    sys.argv.extend(('--class', args.cls))
+    if args.name:
+        sys.argv.extend(('--name', args.name))
     for override in args.override:
-        sys.argv.append('--override={}'.format(override))
+        sys.argv.extend(('--override', override))
     sys.argv.extend(items)
-    from kitty.main import run_app, main
+    from kitty.main import run_app, main as real_main
     run_app.cached_values_name = 'panel'
     run_app.first_window_callback = setup_x11_window
     run_app.initial_window_size_func = initial_window_size_func
-    main()
+    real_main()
 
 
 if __name__ == '__main__':
     main(sys.argv)
 elif __name__ == '__doc__':
-    sys.cli_docs['usage'] = usage
-    sys.cli_docs['options'] = OPTIONS
-    sys.cli_docs['help_text'] = help_text
+    cd: dict = sys.cli_docs  # type: ignore
+    cd['usage'] = usage
+    cd['options'] = OPTIONS
+    cd['help_text'] = help_text

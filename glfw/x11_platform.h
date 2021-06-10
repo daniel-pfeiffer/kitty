@@ -1,8 +1,8 @@
 //========================================================================
-// GLFW 3.3 X11 - www.glfw.org
+// GLFW 3.4 X11 - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -50,6 +50,9 @@
 
 // The XInput extension provides raw mouse motion input
 #include <X11/extensions/XInput2.h>
+
+// The Shape extension provides custom window shapes
+#include <X11/extensions/shape.h>
 
 // The libxkb library is used for improved keyboard support
 #include "xkb_glfw.h"
@@ -125,6 +128,16 @@ typedef XRenderPictFormat* (* PFN_XRenderFindVisualFormat)(Display*,Visual const
 #define XRenderQueryVersion _glfw.x11.xrender.QueryVersion
 #define XRenderFindVisualFormat _glfw.x11.xrender.FindVisualFormat
 
+typedef Bool (* PFN_XShapeQueryExtension)(Display*,int*,int*);
+typedef Status (* PFN_XShapeQueryVersion)(Display*dpy,int*,int*);
+typedef void (* PFN_XShapeCombineRegion)(Display*,Window,int,int,int,Region,int);
+typedef void (* PFN_XShapeCombineMask)(Display*,Window,int,int,int,Pixmap,int);
+
+#define XShapeQueryExtension _glfw.x11.xshape.QueryExtension
+#define XShapeQueryVersion _glfw.x11.xshape.QueryVersion
+#define XShapeCombineRegion _glfw.x11.xshape.ShapeCombineRegion
+#define XShapeCombineMask _glfw.x11.xshape.ShapeCombineMask
+
 typedef VkFlags VkXlibSurfaceCreateFlagsKHR;
 typedef VkFlags VkXcbSurfaceCreateFlagsKHR;
 
@@ -152,10 +165,7 @@ typedef VkResult (APIENTRY *PFN_vkCreateXcbSurfaceKHR)(VkInstance,const VkXcbSur
 typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceXcbPresentationSupportKHR)(VkPhysicalDevice,uint32_t,xcb_connection_t*,xcb_visualid_t);
 
 #include "posix_thread.h"
-#include "posix_time.h"
 #include "glx_context.h"
-#include "egl_context.h"
-#include "osmesa_context.h"
 #if defined(__linux__)
 #include "linux_joystick.h"
 #else
@@ -165,9 +175,6 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceXcbPresentationSupportKHR)(Vk
 #define _glfw_dlopen(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
 #define _glfw_dlclose(handle) dlclose(handle)
 #define _glfw_dlsym(handle, name) dlsym(handle, name)
-
-#define _GLFW_EGL_NATIVE_WINDOW  ((EGLNativeWindowType) window->x11.handle)
-#define _GLFW_EGL_NATIVE_DISPLAY ((EGLNativeDisplayType) _glfw.x11.display)
 
 #define _GLFW_PLATFORM_WINDOW_STATE         _GLFWwindowX11  x11
 #define _GLFW_PLATFORM_LIBRARY_WINDOW_STATE _GLFWlibraryX11 x11
@@ -181,13 +188,13 @@ typedef struct _GLFWwindowX11
 {
     Colormap        colormap;
     Window          handle;
+    Window          parent;
 
-    GLFWbool        overrideRedirect;
-    GLFWbool        iconified;
-    GLFWbool        maximized;
+    bool            iconified;
+    bool            maximized;
 
     // Whether the visual supports framebuffer transparency
-    GLFWbool        transparent;
+    bool            transparent;
 
     // Cached position and size used to filter out duplicate events
     int             width, height;
@@ -197,9 +204,6 @@ typedef struct _GLFWwindowX11
     int             lastCursorPosX, lastCursorPosY;
     // The last position the cursor was warped to by GLFW
     int             warpCursorPosX, warpCursorPosY;
-
-    // The time of the last KeyPress event
-    Time            lastKeyTime;
 
 } _GLFWwindowX11;
 
@@ -231,6 +235,8 @@ typedef struct _GLFWlibraryX11
     _GLFWwindow*    disabledCursorWindow;
 
     // Window manager atoms
+    Atom            NET_SUPPORTED;
+    Atom            NET_SUPPORTING_WM_CHECK;
     Atom            WM_PROTOCOLS;
     Atom            WM_STATE;
     Atom            WM_DELETE_WINDOW;
@@ -251,6 +257,8 @@ typedef struct _GLFWlibraryX11
     Atom            NET_WM_FULLSCREEN_MONITORS;
     Atom            NET_WM_WINDOW_OPACITY;
     Atom            NET_WM_CM_Sx;
+    Atom            NET_WORKAREA;
+    Atom            NET_CURRENT_DESKTOP;
     Atom            NET_ACTIVE_WINDOW;
     Atom            NET_FRAME_EXTENTS;
     Atom            NET_REQUEST_FRAME_EXTENTS;
@@ -266,7 +274,6 @@ typedef struct _GLFWlibraryX11
     Atom            XdndFinished;
     Atom            XdndSelection;
     Atom            XdndTypeList;
-    Atom            text_uri_list;
 
     // Selection (clipboard) atoms
     Atom            TARGETS;
@@ -286,14 +293,14 @@ typedef struct _GLFWlibraryX11
     Atom            RESOURCE_MANAGER;
 
     struct {
-        GLFWbool    available;
+        bool        available;
         void*       handle;
         int         eventBase;
         int         errorBase;
         int         major;
         int         minor;
-        GLFWbool    gammaBroken;
-        GLFWbool    monitorBroken;
+        bool        gammaBroken;
+        bool        monitorBroken;
         PFN_XRRAllocGamma AllocGamma;
         PFN_XRRFreeCrtcInfo FreeCrtcInfo;
         PFN_XRRFreeGamma FreeGamma;
@@ -327,7 +334,8 @@ typedef struct _GLFWlibraryX11
     struct {
         int         version;
         Window      source;
-        Atom        format;
+        char        format[128];
+        int         format_priority;
     } xdnd;
 
     struct {
@@ -338,7 +346,7 @@ typedef struct _GLFWlibraryX11
     } xcursor;
 
     struct {
-        GLFWbool    available;
+        bool        available;
         void*       handle;
         int         major;
         int         minor;
@@ -348,7 +356,7 @@ typedef struct _GLFWlibraryX11
     } xinerama;
 
     struct {
-        GLFWbool    available;
+        bool        available;
         void*       handle;
         int         eventBase;
         int         errorBase;
@@ -359,7 +367,7 @@ typedef struct _GLFWlibraryX11
     } vidmode;
 
     struct {
-        GLFWbool    available;
+        bool        available;
         void*       handle;
         int         majorOpcode;
         int         eventBase;
@@ -371,7 +379,7 @@ typedef struct _GLFWlibraryX11
     } xi;
 
     struct {
-        GLFWbool    available;
+        bool        available;
         void*       handle;
         int         major;
         int         minor;
@@ -381,6 +389,19 @@ typedef struct _GLFWlibraryX11
         PFN_XRenderQueryVersion QueryVersion;
         PFN_XRenderFindVisualFormat FindVisualFormat;
     } xrender;
+
+    struct {
+        bool        available;
+        void*       handle;
+        int         major;
+        int         minor;
+        int         eventBase;
+        int         errorBase;
+        PFN_XShapeQueryExtension QueryExtension;
+        PFN_XShapeCombineRegion ShapeCombineRegion;
+        PFN_XShapeQueryVersion QueryVersion;
+        PFN_XShapeCombineMask ShapeCombineMask;
+    } xshape;
 
     EventLoopData eventLoopData;
 
@@ -408,6 +429,7 @@ typedef struct _GLFWcursorX11
 
 } _GLFWcursorX11;
 
+
 void _glfwPollMonitorsX11(void);
 void _glfwSetVideoModeX11(_GLFWmonitor* monitor, const GLFWvidmode* desired);
 void _glfwRestoreVideoModeX11(_GLFWmonitor* monitor);
@@ -418,11 +440,11 @@ unsigned long _glfwGetWindowPropertyX11(Window window,
                                         Atom property,
                                         Atom type,
                                         unsigned char** value);
-GLFWbool _glfwIsVisualTransparentX11(Visual* visual);
+bool _glfwIsVisualTransparentX11(Visual* visual);
 
 void _glfwGrabErrorHandlerX11(void);
 void _glfwReleaseErrorHandlerX11(void);
 void _glfwInputErrorX11(int error, const char* message);
 
-void _glfwGetSystemContentScaleX11(float* xscale, float* yscale, GLFWbool bypass_cache);
+void _glfwGetSystemContentScaleX11(float* xscale, float* yscale, bool bypass_cache);
 void _glfwPushSelectionToManagerX11(void);

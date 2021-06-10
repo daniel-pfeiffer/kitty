@@ -6,14 +6,17 @@
  */
 
 #include "data-types.h"
+#include "cleanup.h"
 #include <dlfcn.h>
 
 #define FUNC(name, restype, ...) typedef restype (*name##_func)(__VA_ARGS__); static name##_func name = NULL
 #define LOAD_FUNC(handle, name) {\
     *(void **) (&name) = dlsym(handle, #name); \
-    const char* error = dlerror(); \
-    if (error != NULL) { \
-        PyErr_Format(PyExc_OSError, "Failed to load the function %s with error: %s", #name, error); dlclose(handle); handle = NULL; return NULL; \
+    if (!name) { \
+        const char* error = dlerror(); \
+        if (error != NULL) { \
+            PyErr_Format(PyExc_OSError, "Failed to load the function %s with error: %s", #name, error); dlclose(handle); handle = NULL; return NULL; \
+        } \
     } \
 }
 
@@ -30,13 +33,26 @@ static void* libsn_handle = NULL;
 static PyObject*
 init_x11_startup_notification(PyObject UNUSED *self, PyObject *args) {
     static bool done = false;
-    static const char* libname = "libstartup-notification-1.so";
     if (!done) {
         done = true;
 
-        libsn_handle = dlopen(libname, RTLD_LAZY);
+        const char* libnames[] = {
+#if defined(_KITTY_STARTUP_NOTIFICATION_LIBRARY)
+            _KITTY_STARTUP_NOTIFICATION_LIBRARY,
+#else
+            "libstartup-notification-1.so",
+            // some installs are missing the .so symlink, so try the full name
+            "libstartup-notification-1.so.0",
+            "libstartup-notification-1.so.0.0.0",
+#endif
+            NULL
+        };
+        for (int i = 0; libnames[i]; i++) {
+            libsn_handle = dlopen(libnames[i], RTLD_LAZY);
+            if (libsn_handle) break;
+        }
         if (libsn_handle == NULL) {
-            PyErr_Format(PyExc_OSError, "Failed to load %s with error: %s", libname, dlerror());
+            PyErr_Format(PyExc_OSError, "Failed to load %s with error: %s", libnames[0], dlerror());
             return NULL;
         }
         dlerror();    /* Clear any existing error */
@@ -84,17 +100,81 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+static void* libcanberra_handle = NULL;
+static void *canberra_ctx = NULL;
+FUNC(ca_context_create, int, void**);
+FUNC(ca_context_destroy, int, void*);
+typedef int (*ca_context_play_func)(void*, uint32_t, ...); static ca_context_play_func ca_context_play = NULL;
+
+static PyObject*
+load_libcanberra_functions(void) {
+    LOAD_FUNC(libcanberra_handle, ca_context_create);
+    LOAD_FUNC(libcanberra_handle, ca_context_play);
+    LOAD_FUNC(libcanberra_handle, ca_context_destroy);
+    return NULL;
+}
+
+static void
+load_libcanberra(void) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    const char* libnames[] = {
+#if defined(_KITTY_CANBERRA_LIBRARY)
+        _KITTY_CANBERRA_LIBRARY,
+#else
+        "libcanberra.so",
+        // some installs are missing the .so symlink, so try the full name
+        "libcanberra.so.0",
+        "libcanberra.so.0.2.5",
+#endif
+        NULL
+    };
+    for (int i = 0; libnames[i]; i++) {
+        libcanberra_handle = dlopen(libnames[i], RTLD_LAZY);
+        if (libcanberra_handle) break;
+    }
+    if (libcanberra_handle == NULL) {
+        fprintf(stderr, "Failed to load %s, cannot play beep sound, with error: %s\n", libnames[0], dlerror());
+        return;
+    }
+    load_libcanberra_functions();
+    if (PyErr_Occurred()) {
+        PyErr_Print();
+        dlclose(libcanberra_handle); libcanberra_handle = NULL;
+        return;
+    }
+    if (ca_context_create(&canberra_ctx) != 0) {
+        fprintf(stderr, "Failed to create libcanberra context, cannot play beep sound\n");
+        ca_context_destroy(canberra_ctx); canberra_ctx = NULL;
+        dlclose(libcanberra_handle); libcanberra_handle = NULL;
+    }
+}
+
+void
+play_canberra_sound(const char *which_sound, const char *event_id) {
+    load_libcanberra();
+    if (libcanberra_handle == NULL || canberra_ctx == NULL) return;
+    ca_context_play(
+        canberra_ctx, 0,
+        "event.id", which_sound,
+        "event.description", event_id,
+        NULL
+    );
+}
+
 static void
 finalize(void) {
     if (libsn_handle) dlclose(libsn_handle);
+    libsn_handle = NULL;
+    if (canberra_ctx) ca_context_destroy(canberra_ctx);
+    canberra_ctx = NULL;
+    if (libcanberra_handle) dlclose(libcanberra_handle);
 }
 
 bool
 init_desktop(PyObject *m) {
     if (PyModule_AddFunctions(m, module_methods) != 0) return false;
-    if (Py_AtExit(finalize) != 0) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to register the desktop.c at exit handler");
-        return false;
-    }
+    register_at_exit_cleanup_func(DESKTOP_CLEANUP_FUNC, finalize);
     return true;
 }

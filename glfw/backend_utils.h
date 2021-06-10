@@ -1,7 +1,7 @@
 //========================================================================
-// GLFW 3.3 Wayland - www.glfw.org
+// GLFW 3.4
 //------------------------------------------------------------------------
-// Copyright (c) 2014 Jonas Ådahl <jadahl@gmail.com>
+// Copyright (c) 2014 Kovid Goyal
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -25,50 +25,76 @@
 //========================================================================
 
 #pragma once
+#include "../kitty/monotonic.h"
 #include <poll.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <sys/types.h>
+
+#ifdef __has_include
+#if __has_include(<sys/eventfd.h>)
+#define HAS_EVENT_FD
+#include <sys/eventfd.h>
+#endif
+#else
+#define HAS_EVENT_FD
+#include <sys/eventfd.h>
+#endif
 
 typedef unsigned long long id_type;
 typedef void(*watch_callback_func)(int, int, void*);
 typedef void(*timer_callback_func)(id_type, void*);
+typedef void (* GLFWuserdatafreefun)(id_type, void*);
 
 typedef struct {
     int fd, events, enabled, ready;
     watch_callback_func callback;
     void *callback_data;
+    GLFWuserdatafreefun free;
     id_type id;
     const char *name;
 } Watch;
 
 typedef struct {
     id_type id;
-    double interval, trigger_at;
+    monotonic_t interval, trigger_at;
     timer_callback_func callback;
     void *callback_data;
+    GLFWuserdatafreefun free;
     const char *name;
+    bool repeats;
 } Timer;
 
 
 typedef struct {
     struct pollfd fds[32];
+#ifdef HAS_EVENT_FD
+    int wakeupFd;
+#else
     int wakeupFds[2];
+#endif
+    bool wakeup_data_read, wakeup_fd_ready;
     nfds_t watches_count, timers_count;
     Watch watches[32];
     Timer timers[128];
 } EventLoopData;
 
 
+void check_for_wakeup_events(EventLoopData *eld);
 id_type addWatch(EventLoopData *eld, const char *name, int fd, int events, int enabled, watch_callback_func cb, void *cb_data);
 void removeWatch(EventLoopData *eld, id_type watch_id);
 void toggleWatch(EventLoopData *eld, id_type watch_id, int enabled);
-id_type addTimer(EventLoopData *eld, const char *name, double interval, int enabled, timer_callback_func cb, void *cb_data);
+id_type addTimer(EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free);
 void removeTimer(EventLoopData *eld, id_type timer_id);
+void removeAllTimers(EventLoopData *eld);
 void toggleTimer(EventLoopData *eld, id_type timer_id, int enabled);
-void changeTimerInterval(EventLoopData *eld, id_type timer_id, double interval);
-double prepareForPoll(EventLoopData *eld, double timeout);
-int pollWithTimeout(struct pollfd *fds, nfds_t nfds, double timeout);
-int pollForEvents(EventLoopData *eld, double timeout);
+void changeTimerInterval(EventLoopData *eld, id_type timer_id, monotonic_t interval);
+monotonic_t prepareForPoll(EventLoopData *eld, monotonic_t timeout);
+int pollWithTimeout(struct pollfd *fds, nfds_t nfds, monotonic_t timeout);
+int pollForEvents(EventLoopData *eld, monotonic_t timeout, watch_callback_func);
 unsigned dispatchTimers(EventLoopData *eld);
-void closeFds(int *fds, size_t count);
-void initPollData(EventLoopData *eld, int wakeup_fd, int display_fd);
-char** parseUriList(char* text, int* count);
+void finalizePollData(EventLoopData *eld);
+bool initPollData(EventLoopData *eld, int display_fd);
+void wakeupEventLoop(EventLoopData *eld);
+char* utf_8_strndup(const char* source, size_t max_length);
+int createAnonymousFile(off_t size);
